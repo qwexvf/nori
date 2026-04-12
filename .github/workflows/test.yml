@@ -12,10 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/checkout@v6
-        with:
-          repository: qwexvf/taffy
-          path: ../taffy
+      - name: Clone taffy dependency
+        run: git clone https://github.com/qwexvf/taffy.git ../taffy
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"
