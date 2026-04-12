@@ -1,0 +1,16 @@
+spec: test/fixtures/petstore.yaml
+output:
+  gleam:
+    enabled: true
+    dir: ./test_output/gleam
+    generated_suffix: false
+  typescript:
+    enabled: true
+    dir: ./test_output/ts
+    generated_suffix: true
+  react_query:
+    enabled: false
+  swr:
+    enabled: false
+  fetch:
+    enabled: false

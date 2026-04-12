@@ -1,0 +1,17 @@
+name = "nori"
+version = "0.1.0"
+description = "OpenAPI code generation for Gleam — parse specs, generate types, routes, clients, and React Query/SWR hooks"
+licences = ["Apache-2.0"]
+repository = { type = "github", user = "qwexvf", repo = "nori" }
+
+[dependencies]
+gleam_stdlib = ">= 0.44.0 and < 2.0.0"
+gleam_json = ">= 3.1.0 and < 4.0.0"
+taffy = { path = "../taffy" }
+simplifile = ">= 2.4.0 and < 3.0.0"
+glint = ">= 1.0.0 and < 2.0.0"
+argv = ">= 1.0.2 and < 2.0.0"
+handles = ">= 5.0.0 and < 6.0.0"
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"

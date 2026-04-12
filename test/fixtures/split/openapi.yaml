@@ -1,0 +1,15 @@
+openapi: "3.1.0"
+info:
+  title: Split Spec API
+  version: "1.0.0"
+paths:
+  /users:
+    $ref: "./paths/users/index.yaml"
+  /users/{id}:
+    $ref: "./paths/users/by_id.yaml"
+components:
+  schemas:
+    User:
+      $ref: "./components/schemas/user.yaml"
+    Error:
+      $ref: "./components/schemas/error.yaml"

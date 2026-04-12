@@ -1,0 +1,22 @@
+get:
+  operationId: getUserById
+  summary: Get a user by ID
+  parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    "200":
+      description: A user
+      content:
+        application/json:
+          schema:
+            $ref: "../../components/schemas/user.yaml"
+    "404":
+      description: User not found
+      content:
+        application/json:
+          schema:
+            $ref: "../../components/schemas/error.yaml"

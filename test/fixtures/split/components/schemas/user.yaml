@@ -1,0 +1,15 @@
+type: object
+required:
+  - id
+  - name
+  - email
+properties:
+  id:
+    type: string
+  name:
+    type: string
+  email:
+    type: string
+    format: email
+  bio:
+    type: string

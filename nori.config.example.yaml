@@ -1,0 +1,75 @@
+# openapi.config.yaml — Configuration for OpenAPI code generation
+#
+# Place this file in your project root. The CLI auto-detects it,
+# or pass --config=path/to/config.yaml explicitly.
+#
+# Minimal config (everything else uses defaults):
+#   spec: ./openapi.yaml
+
+# Path to your OpenAPI spec file (YAML or JSON).
+# Supports single-file or multi-file specs with $ref (auto-resolved).
+spec: ./openapi.yaml
+
+# Output configuration per target language/framework.
+# Each target can be independently enabled/disabled with its own output directory.
+output:
+
+  # Gleam server-side code generation
+  # Generates:
+  #   - types.gleam      — Record types, custom types, decoders (gleam/dynamic/decode), JSON encoders
+  #   - client.gleam     — Framework-agnostic HTTP request builders + response decoders
+  #   - routes.gleam     — Route union type + match_route(method, segments) pattern matcher
+  #   - middleware.gleam  — Auth extractors, CORS, content-type validation (from securitySchemes)
+  gleam:
+    enabled: true                 # Set to false to skip Gleam generation entirely
+    dir: ./src/generated          # Output directory for generated .gleam files
+    generated_suffix: false       # false = types.gleam, true = types.generated.gleam
+
+  # Plain TypeScript types and fetch-based API client
+  # Generates:
+  #   - types.generated.ts   — Interfaces/types for all schemas + enums
+  #   - client.generated.ts  — Typed async functions wrapping fetch() per endpoint
+  typescript:
+    enabled: true                 # Set to false to skip TypeScript generation
+    dir: ./src/api                # Output directory for generated .ts files
+    generated_suffix: true        # true = types.generated.ts (recommended to distinguish from hand-written code)
+    use_interfaces: true          # true = export interface User {}, false = export type User = {}
+    use_exports: true             # true = add "export" before each type declaration
+    readonly_properties: false    # true = adds "readonly" modifier to all properties
+
+  # React Query (TanStack Query) hooks
+  # Generates:
+  #   - hooks.generated.ts — useQuery hooks for GET endpoints, useMutation for POST/PUT/DELETE
+  #                          Query key factories per tag for cache invalidation
+  # Note: Also generates typescript types + client as dependencies
+  react_query:
+    enabled: true                 # Set to false to skip React Query hook generation
+    dir: ./src/api                # Usually same dir as typescript so imports resolve
+    generated_suffix: true        # true = hooks.generated.ts
+
+  # SWR hooks (Vercel's stale-while-revalidate)
+  # Generates:
+  #   - swr-hooks.generated.ts — useSWR hooks for GET, useSWRMutation for mutations
+  # Note: Also generates typescript types + client as dependencies
+  swr:
+    enabled: false                # Set to true if using SWR instead of React Query
+    dir: ./src/api                # Usually same dir as typescript so imports resolve
+    generated_suffix: true        # true = swr-hooks.generated.ts
+
+  # Fetch-only client (TypeScript types + client, no hooks)
+  # Same output as the typescript target — use when you don't need React Query or SWR
+  fetch:
+    enabled: false                # Redundant if typescript is already enabled
+    dir: ./src/api
+    generated_suffix: true
+
+# Custom templates (optional)
+# Override any TypeScript template with your own Handlebars-style template file.
+# Templates use the `handles` syntax: {{ var }}, {{#each list}}, {{#if cond}}, etc.
+# See src/openapi/codegen/templates.gleam for the default templates and available context variables.
+#
+# templates:
+#   typescript_types: ./templates/types.hbs        # Override TypeScript type generation
+#   typescript_client: ./templates/client.hbs      # Override fetch client generation
+#   typescript_react_query: ./templates/hooks.hbs  # Override React Query hook generation
+#   typescript_swr: ./templates/swr.hbs            # Override SWR hook generation
