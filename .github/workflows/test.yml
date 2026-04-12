@@ -12,12 +12,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: qwexvf/taffy
+          path: ../taffy
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"
           gleam-version: "1.15.2"
           rebar3-version: "3"
-          # elixir-version: "1"
       - run: gleam deps download
       - run: gleam check
       - run: gleam test
