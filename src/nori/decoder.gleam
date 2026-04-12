@@ -517,110 +517,143 @@ fn schema_or_ref_decoder() -> Decoder(Ref(Schema)) {
 
 /// Decoder for Schema objects.
 fn schema_decoder() -> Decoder(Schema) {
+  // Core vocabulary
+  use schema_uri <- decode.optional_field("$schema", None, option_decoder(decode.string))
+  use vocabulary <- decode.optional_field("$vocabulary", None, option_decoder(decode.dict(decode.string, decode.bool)))
+  use id <- decode.optional_field("$id", None, option_decoder(decode.string))
+  use anchor <- decode.optional_field("$anchor", None, option_decoder(decode.string))
+  use dynamic_anchor <- decode.optional_field("$dynamicAnchor", None, option_decoder(decode.string))
   use ref <- decode.optional_field("$ref", None, option_decoder(decode.string))
-  use schema_type <- decode.optional_field(
-    "type",
-    None,
-    option_decoder(schema_type_decoder()),
-  )
-  use title <- decode.optional_field(
-    "title",
-    None,
-    option_decoder(decode.string),
-  )
-  use description <- decode.optional_field(
-    "description",
-    None,
-    option_decoder(decode.string),
-  )
-  use format <- decode.optional_field(
-    "format",
-    None,
-    option_decoder(decode.string),
-  )
-  use required <- decode.optional_field(
-    "required",
-    [],
-    decode.list(decode.string),
-  )
-  use properties <- decode.optional_field(
-    "properties",
-    dict.new(),
-    decode.dict(decode.string, schema_or_ref_decoder()),
-  )
-  use items <- decode.optional_field(
-    "items",
-    None,
-    option_decoder(schema_or_ref_decoder()),
-  )
-  use all_of <- decode.optional_field(
-    "allOf",
-    [],
-    decode.list(schema_or_ref_decoder()),
-  )
-  use any_of <- decode.optional_field(
-    "anyOf",
-    [],
-    decode.list(schema_or_ref_decoder()),
-  )
-  use one_of <- decode.optional_field(
-    "oneOf",
-    [],
-    decode.list(schema_or_ref_decoder()),
-  )
-  use enum_values <- decode.optional_field(
-    "enum",
-    None,
-    option_decoder(decode.list(json_decoder())),
-  )
-  use additional_properties <- decode.optional_field(
-    "additionalProperties",
-    None,
-    option_decoder(additional_properties_decoder()),
-  )
-  use discriminator <- decode.optional_field(
-    "discriminator",
-    None,
-    option_decoder(discriminator_decoder()),
-  )
-  use read_only <- decode.optional_field(
-    "readOnly",
-    None,
-    option_decoder(decode.bool),
-  )
-  use write_only <- decode.optional_field(
-    "writeOnly",
-    None,
-    option_decoder(decode.bool),
-  )
-  use deprecated <- decode.optional_field(
-    "deprecated",
-    None,
-    option_decoder(decode.bool),
-  )
+  use dynamic_ref <- decode.optional_field("$dynamicRef", None, option_decoder(decode.string))
+  use defs <- decode.optional_field("$defs", None, option_decoder(decode.dict(decode.string, schema_decoder())))
+  use comment <- decode.optional_field("$comment", None, option_decoder(decode.string))
+  // Applicator vocabulary
+  use all_of <- decode.optional_field("allOf", [], decode.list(schema_or_ref_decoder()))
+  use any_of <- decode.optional_field("anyOf", [], decode.list(schema_or_ref_decoder()))
+  use one_of <- decode.optional_field("oneOf", [], decode.list(schema_or_ref_decoder()))
+  use not <- decode.optional_field("not", None, option_decoder(schema_or_ref_decoder()))
+  use if_schema <- decode.optional_field("if", None, option_decoder(schema_or_ref_decoder()))
+  use then_schema <- decode.optional_field("then", None, option_decoder(schema_or_ref_decoder()))
+  use else_schema <- decode.optional_field("else", None, option_decoder(schema_or_ref_decoder()))
+  use dependent_schemas <- decode.optional_field("dependentSchemas", None, option_decoder(decode.dict(decode.string, schema_or_ref_decoder())))
+  use prefix_items <- decode.optional_field("prefixItems", [], decode.list(schema_or_ref_decoder()))
+  use items <- decode.optional_field("items", None, option_decoder(schema_or_ref_decoder()))
+  use contains <- decode.optional_field("contains", None, option_decoder(schema_or_ref_decoder()))
+  use properties <- decode.optional_field("properties", dict.new(), decode.dict(decode.string, schema_or_ref_decoder()))
+  use pattern_properties <- decode.optional_field("patternProperties", None, option_decoder(decode.dict(decode.string, schema_or_ref_decoder())))
+  use additional_properties <- decode.optional_field("additionalProperties", None, option_decoder(additional_properties_decoder()))
+  use property_names <- decode.optional_field("propertyNames", None, option_decoder(schema_or_ref_decoder()))
+  use unevaluated_items <- decode.optional_field("unevaluatedItems", None, option_decoder(schema_or_ref_decoder()))
+  use unevaluated_properties <- decode.optional_field("unevaluatedProperties", None, option_decoder(schema_or_ref_decoder()))
+  // Validation vocabulary - type
+  use schema_type <- decode.optional_field("type", None, option_decoder(schema_type_decoder()))
+  use const_value <- decode.optional_field("const", None, option_decoder(json_decoder()))
+  use enum_values <- decode.optional_field("enum", None, option_decoder(decode.list(json_decoder())))
+  // Validation vocabulary - numeric
+  use multiple_of <- decode.optional_field("multipleOf", None, option_decoder(decode.float))
+  use maximum <- decode.optional_field("maximum", None, option_decoder(decode.float))
+  use exclusive_maximum <- decode.optional_field("exclusiveMaximum", None, option_decoder(decode.float))
+  use minimum <- decode.optional_field("minimum", None, option_decoder(decode.float))
+  use exclusive_minimum <- decode.optional_field("exclusiveMinimum", None, option_decoder(decode.float))
+  // Validation vocabulary - string
+  use max_length <- decode.optional_field("maxLength", None, option_decoder(decode.int))
+  use min_length <- decode.optional_field("minLength", None, option_decoder(decode.int))
+  use pattern <- decode.optional_field("pattern", None, option_decoder(decode.string))
+  // Validation vocabulary - array
+  use max_items <- decode.optional_field("maxItems", None, option_decoder(decode.int))
+  use min_items <- decode.optional_field("minItems", None, option_decoder(decode.int))
+  use unique_items <- decode.optional_field("uniqueItems", None, option_decoder(decode.bool))
+  use max_contains <- decode.optional_field("maxContains", None, option_decoder(decode.int))
+  use min_contains <- decode.optional_field("minContains", None, option_decoder(decode.int))
+  // Validation vocabulary - object
+  use max_properties <- decode.optional_field("maxProperties", None, option_decoder(decode.int))
+  use min_properties <- decode.optional_field("minProperties", None, option_decoder(decode.int))
+  use required <- decode.optional_field("required", [], decode.list(decode.string))
+  use dependent_required <- decode.optional_field("dependentRequired", None, option_decoder(decode.dict(decode.string, decode.list(decode.string))))
+  // Format vocabulary
+  use format <- decode.optional_field("format", None, option_decoder(decode.string))
+  // Content vocabulary
+  use content_encoding <- decode.optional_field("contentEncoding", None, option_decoder(decode.string))
+  use content_media_type <- decode.optional_field("contentMediaType", None, option_decoder(decode.string))
+  use content_schema <- decode.optional_field("contentSchema", None, option_decoder(schema_or_ref_decoder()))
+  // Meta-data vocabulary
+  use title <- decode.optional_field("title", None, option_decoder(decode.string))
+  use description <- decode.optional_field("description", None, option_decoder(decode.string))
+  use default <- decode.optional_field("default", None, option_decoder(json_decoder()))
+  use deprecated <- decode.optional_field("deprecated", None, option_decoder(decode.bool))
+  use read_only <- decode.optional_field("readOnly", None, option_decoder(decode.bool))
+  use write_only <- decode.optional_field("writeOnly", None, option_decoder(decode.bool))
+  use examples <- decode.optional_field("examples", None, option_decoder(decode.list(json_decoder())))
+  // OpenAPI extensions
+  use discriminator <- decode.optional_field("discriminator", None, option_decoder(discriminator_decoder()))
+  use xml <- decode.optional_field("xml", None, option_decoder(xml_decoder()))
+  use external_docs <- decode.optional_field("externalDocs", None, option_decoder(external_documentation_decoder()))
+  use example <- decode.optional_field("example", None, option_decoder(json_decoder()))
 
-  decode.success(
-    Schema(
-      ..schema.empty(),
-      ref: ref,
-      schema_type: schema_type,
-      title: title,
-      description: description,
-      format: format,
-      required: required,
-      properties: properties,
-      items: items,
-      all_of: all_of,
-      any_of: any_of,
-      one_of: one_of,
-      enum_values: enum_values,
-      additional_properties: additional_properties,
-      discriminator: discriminator,
-      read_only: read_only,
-      write_only: write_only,
-      deprecated: deprecated,
-    ),
-  )
+  decode.success(Schema(
+    schema: schema_uri,
+    vocabulary: vocabulary,
+    id: id,
+    anchor: anchor,
+    dynamic_anchor: dynamic_anchor,
+    ref: ref,
+    dynamic_ref: dynamic_ref,
+    defs: defs,
+    comment: comment,
+    all_of: all_of,
+    any_of: any_of,
+    one_of: one_of,
+    not: not,
+    if_schema: if_schema,
+    then_schema: then_schema,
+    else_schema: else_schema,
+    dependent_schemas: dependent_schemas,
+    prefix_items: prefix_items,
+    items: items,
+    contains: contains,
+    properties: properties,
+    pattern_properties: pattern_properties,
+    additional_properties: additional_properties,
+    property_names: property_names,
+    unevaluated_items: unevaluated_items,
+    unevaluated_properties: unevaluated_properties,
+    schema_type: schema_type,
+    const_value: const_value,
+    enum_values: enum_values,
+    multiple_of: multiple_of,
+    maximum: maximum,
+    exclusive_maximum: exclusive_maximum,
+    minimum: minimum,
+    exclusive_minimum: exclusive_minimum,
+    max_length: max_length,
+    min_length: min_length,
+    pattern: pattern,
+    max_items: max_items,
+    min_items: min_items,
+    unique_items: unique_items,
+    max_contains: max_contains,
+    min_contains: min_contains,
+    max_properties: max_properties,
+    min_properties: min_properties,
+    required: required,
+    dependent_required: dependent_required,
+    format: format,
+    content_encoding: content_encoding,
+    content_media_type: content_media_type,
+    content_schema: content_schema,
+    title: title,
+    description: description,
+    default: default,
+    deprecated: deprecated,
+    read_only: read_only,
+    write_only: write_only,
+    examples: examples,
+    discriminator: discriminator,
+    xml: xml,
+    external_docs: external_docs,
+    example: example,
+    extensions: dict.new(),
+  ))
 }
 
 /// Decoder for additional properties (bool or schema).
@@ -642,6 +675,34 @@ fn discriminator_decoder() -> Decoder(schema.Discriminator) {
   decode.success(schema.Discriminator(
     property_name: property_name,
     mapping: mapping,
+    extensions: dict.new(),
+  ))
+}
+
+/// Decoder for ExternalDocumentation objects.
+fn external_documentation_decoder() -> Decoder(schema.ExternalDocumentation) {
+  use url <- decode.field("url", decode.string)
+  use description <- decode.optional_field("description", None, option_decoder(decode.string))
+  decode.success(ExternalDocumentation(
+    url: url,
+    description: description,
+    extensions: dict.new(),
+  ))
+}
+
+/// Decoder for XML metadata.
+fn xml_decoder() -> Decoder(schema.Xml) {
+  use name <- decode.optional_field("name", None, option_decoder(decode.string))
+  use namespace <- decode.optional_field("namespace", None, option_decoder(decode.string))
+  use prefix <- decode.optional_field("prefix", None, option_decoder(decode.string))
+  use attribute <- decode.optional_field("attribute", None, option_decoder(decode.bool))
+  use wrapped <- decode.optional_field("wrapped", None, option_decoder(decode.bool))
+  decode.success(schema.Xml(
+    name: name,
+    namespace: namespace,
+    prefix: prefix,
+    attribute: attribute,
+    wrapped: wrapped,
     extensions: dict.new(),
   ))
 }
