@@ -8,6 +8,7 @@ import gleam/dynamic/decode.{type DecodeError, type Decoder}
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import nori/components.{type Components, Components}
 import nori/document.{type Document, Document}
 import nori/info.{type Contact, type Info, type License, Contact, Info, License}
@@ -81,6 +82,7 @@ pub fn document_decoder() -> Decoder(Document) {
     None,
     option_decoder(external_docs_decoder()),
   )
+  use extensions <- decode.subfield([], extensions_decoder())
 
   decode.success(Document(
     openapi: openapi,
@@ -93,7 +95,7 @@ pub fn document_decoder() -> Decoder(Document) {
     security: security,
     tags: tags,
     external_docs: external_docs,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -140,6 +142,7 @@ fn info_decoder() -> Decoder(Info) {
     None,
     option_decoder(decode.string),
   )
+  use extensions <- decode.subfield([], extensions_decoder())
 
   decode.success(Info(
     title: title,
@@ -149,7 +152,7 @@ fn info_decoder() -> Decoder(Info) {
     contact: contact,
     license: license,
     summary: summary,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -163,11 +166,12 @@ fn contact_decoder() -> Decoder(Contact) {
     option_decoder(decode.string),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(Contact(
     name: name,
     url: url,
     email: email,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -181,11 +185,12 @@ fn license_decoder() -> Decoder(License) {
   )
   use url <- decode.optional_field("url", None, option_decoder(decode.string))
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(License(
     name: name,
     identifier: identifier,
     url: url,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -203,11 +208,12 @@ fn server_decoder() -> Decoder(Server) {
     decode.dict(decode.string, server_variable_decoder()),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(Server(
     url: url,
     description: description,
     variables: variables,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -225,11 +231,12 @@ fn server_variable_decoder() -> Decoder(ServerVariable) {
     option_decoder(decode.string),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(ServerVariable(
     enum_values: enum_values,
     default: default,
     description: description,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -307,6 +314,7 @@ fn path_item_decoder() -> Decoder(PathItem) {
     decode.list(parameter_or_ref_decoder()),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(PathItem(
     ref: ref,
     summary: summary,
@@ -321,7 +329,7 @@ fn path_item_decoder() -> Decoder(PathItem) {
     trace: trace,
     servers: servers,
     parameters: parameters,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -384,6 +392,7 @@ fn operation_decoder() -> Decoder(Operation) {
     decode.list(server_decoder()),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(Operation(
     tags: tags,
     summary: summary,
@@ -400,7 +409,7 @@ fn operation_decoder() -> Decoder(Operation) {
       s -> Some(s)
     },
     servers: servers,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -469,6 +478,7 @@ fn parameter_decoder() -> Decoder(Parameter) {
     option_decoder(decode.dict(decode.string, media_type_decoder())),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(Parameter(
     name: name,
     in_: in_,
@@ -483,7 +493,7 @@ fn parameter_decoder() -> Decoder(Parameter) {
     example: example,
     examples: examples,
     content: content,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -589,6 +599,7 @@ fn schema_decoder() -> Decoder(Schema) {
   use xml <- decode.optional_field("xml", None, option_decoder(xml_decoder()))
   use external_docs <- decode.optional_field("externalDocs", None, option_decoder(external_documentation_decoder()))
   use example <- decode.optional_field("example", None, option_decoder(json_decoder()))
+  use extensions <- decode.subfield([], extensions_decoder())
 
   decode.success(Schema(
     schema: schema_uri,
@@ -652,7 +663,7 @@ fn schema_decoder() -> Decoder(Schema) {
     xml: xml,
     external_docs: external_docs,
     example: example,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -672,10 +683,11 @@ fn discriminator_decoder() -> Decoder(schema.Discriminator) {
     option_decoder(decode.dict(decode.string, decode.string)),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(schema.Discriminator(
     property_name: property_name,
     mapping: mapping,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -683,10 +695,11 @@ fn discriminator_decoder() -> Decoder(schema.Discriminator) {
 fn external_documentation_decoder() -> Decoder(schema.ExternalDocumentation) {
   use url <- decode.field("url", decode.string)
   use description <- decode.optional_field("description", None, option_decoder(decode.string))
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(ExternalDocumentation(
     url: url,
     description: description,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -697,13 +710,14 @@ fn xml_decoder() -> Decoder(schema.Xml) {
   use prefix <- decode.optional_field("prefix", None, option_decoder(decode.string))
   use attribute <- decode.optional_field("attribute", None, option_decoder(decode.bool))
   use wrapped <- decode.optional_field("wrapped", None, option_decoder(decode.bool))
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(schema.Xml(
     name: name,
     namespace: namespace,
     prefix: prefix,
     attribute: attribute,
     wrapped: wrapped,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -751,10 +765,11 @@ fn external_docs_decoder() -> Decoder(ExternalDocumentation) {
     option_decoder(decode.string),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(ExternalDocumentation(
     url: url,
     description: description,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -781,11 +796,12 @@ fn request_body_decoder() -> Decoder(RequestBody) {
     option_decoder(decode.bool),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(RequestBody(
     description: description,
     content: content,
     required: required,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -812,12 +828,13 @@ fn media_type_decoder() -> Decoder(MediaType) {
     option_decoder(decode.dict(decode.string, encoding_decoder())),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(MediaType(
     schema: schema,
     example: example,
     examples: examples,
     encoding: encoding,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -849,12 +866,13 @@ fn example_decoder() -> Decoder(Example) {
     option_decoder(decode.string),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(Example(
     summary: summary,
     description: description,
     value: value,
     external_value: external_value,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -886,13 +904,14 @@ fn encoding_decoder() -> Decoder(Encoding) {
     option_decoder(decode.bool),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(Encoding(
     content_type: content_type,
     headers: headers,
     style: style,
     explode: explode,
     allow_reserved: allow_reserved,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -924,6 +943,7 @@ fn header_decoder() -> Decoder(Header) {
     option_decoder(schema_or_ref_decoder()),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(Header(
     description: description,
     required: required,
@@ -936,7 +956,7 @@ fn header_decoder() -> Decoder(Header) {
     example: None,
     examples: None,
     content: None,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -964,12 +984,13 @@ fn response_decoder() -> Decoder(Response) {
     decode.dict(decode.string, link_or_ref_decoder()),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(Response(
     description: description,
     headers: headers,
     content: content,
     links: links,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -1001,6 +1022,7 @@ fn link_decoder() -> Decoder(Link) {
     option_decoder(server_decoder()),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(Link(
     operation_ref: operation_ref,
     operation_id: operation_id,
@@ -1008,7 +1030,7 @@ fn link_decoder() -> Decoder(Link) {
     request_body: None,
     description: description,
     server: server,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -1075,6 +1097,7 @@ fn components_decoder() -> Decoder(Components) {
     decode.dict(decode.string, path_item_or_ref_decoder()),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(Components(
     schemas: schemas,
     responses: responses,
@@ -1086,7 +1109,7 @@ fn components_decoder() -> Decoder(Components) {
     links: links,
     callbacks: callbacks,
     path_items: path_items,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -1104,6 +1127,7 @@ fn security_scheme_decoder() -> Decoder(SecurityScheme) {
     option_decoder(decode.string),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   case type_ {
     "apiKey" -> {
       use name <- decode.field("name", decode.string)
@@ -1112,7 +1136,7 @@ fn security_scheme_decoder() -> Decoder(SecurityScheme) {
         name: name,
         in_: in_,
         description: description,
-        extensions: dict.new(),
+        extensions: extensions,
       ))
     }
     "http" -> {
@@ -1126,13 +1150,13 @@ fn security_scheme_decoder() -> Decoder(SecurityScheme) {
         scheme: scheme,
         bearer_format: bearer_format,
         description: description,
-        extensions: dict.new(),
+        extensions: extensions,
       ))
     }
     "mutualTLS" -> {
       decode.success(security.MutualTlsSecurityScheme(
         description: description,
-        extensions: dict.new(),
+        extensions: extensions,
       ))
     }
     "oauth2" -> {
@@ -1140,7 +1164,7 @@ fn security_scheme_decoder() -> Decoder(SecurityScheme) {
       decode.success(security.OAuth2SecurityScheme(
         flows: flows,
         description: description,
-        extensions: dict.new(),
+        extensions: extensions,
       ))
     }
     "openIdConnect" -> {
@@ -1148,14 +1172,14 @@ fn security_scheme_decoder() -> Decoder(SecurityScheme) {
       decode.success(security.OpenIdConnectSecurityScheme(
         open_id_connect_url: open_id_connect_url,
         description: description,
-        extensions: dict.new(),
+        extensions: extensions,
       ))
     }
     _ ->
       decode.failure(
         security.MutualTlsSecurityScheme(
           description: None,
-          extensions: dict.new(),
+          extensions: extensions,
         ),
         "apiKey, http, mutualTLS, oauth2, or openIdConnect",
       )
@@ -1194,12 +1218,13 @@ fn oauth_flows_decoder() -> Decoder(OAuthFlows) {
     option_decoder(authorization_code_flow_decoder()),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(OAuthFlows(
     implicit: implicit,
     password: password,
     client_credentials: client_credentials,
     authorization_code: authorization_code,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -1217,11 +1242,12 @@ fn implicit_flow_decoder() -> Decoder(ImplicitOAuthFlow) {
     decode.dict(decode.string, decode.string),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(ImplicitOAuthFlow(
     authorization_url: authorization_url,
     refresh_url: refresh_url,
     scopes: scopes,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -1239,11 +1265,12 @@ fn password_flow_decoder() -> Decoder(PasswordOAuthFlow) {
     decode.dict(decode.string, decode.string),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(PasswordOAuthFlow(
     token_url: token_url,
     refresh_url: refresh_url,
     scopes: scopes,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -1261,11 +1288,12 @@ fn client_credentials_flow_decoder() -> Decoder(ClientCredentialsOAuthFlow) {
     decode.dict(decode.string, decode.string),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(ClientCredentialsOAuthFlow(
     token_url: token_url,
     refresh_url: refresh_url,
     scopes: scopes,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -1284,12 +1312,13 @@ fn authorization_code_flow_decoder() -> Decoder(AuthorizationCodeOAuthFlow) {
     decode.dict(decode.string, decode.string),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(AuthorizationCodeOAuthFlow(
     authorization_url: authorization_url,
     token_url: token_url,
     refresh_url: refresh_url,
     scopes: scopes,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
@@ -1312,15 +1341,24 @@ fn tag_decoder() -> Decoder(Tag) {
     option_decoder(external_docs_decoder()),
   )
 
+  use extensions <- decode.subfield([], extensions_decoder())
   decode.success(Tag(
     name: name,
     description: description,
     external_docs: external_docs,
-    extensions: dict.new(),
+    extensions: extensions,
   ))
 }
 
 // Helper functions
+
+/// Decoder that extracts extension fields (keys starting with "x-") from an object.
+fn extensions_decoder() -> Decoder(Dict(String, Json)) {
+  decode.dict(decode.string, json_decoder())
+  |> decode.map(fn(all_fields) {
+    dict.filter(all_fields, fn(key, _val) { string.starts_with(key, "x-") })
+  })
+}
 
 /// Decoder for reference or inline value.
 fn ref_or_value_decoder(value_decoder: Decoder(a)) -> Decoder(Ref(a)) {
