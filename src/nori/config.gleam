@@ -47,7 +47,7 @@ pub fn load(path: String) -> Result(Config, ConfigError) {
     Error(_) -> Error(ConfigFileNotFound(path))
     Ok(content) -> {
       case taffy.parse(content) {
-        Error(err) -> Error(ConfigParseError(taffy.error_message(err)))
+        Error(err) -> Error(ConfigParseError(err.message))
         Ok(yaml) -> Ok(parse_config(yaml))
       }
     }

@@ -33,7 +33,7 @@ pub type YamlParseError {
 /// ```
 pub fn parse_yaml(input: String) -> Result(Document, YamlParseError) {
   case taffy.parse(input) {
-    Error(err) -> Error(YamlSyntaxError(taffy.error_message(err)))
+    Error(err) -> Error(YamlSyntaxError(err.message))
     Ok(value) -> yaml_value_to_document(value)
   }
 }
@@ -83,7 +83,7 @@ pub fn load_yaml_file(path: String) -> Result(YamlValue, YamlParseError) {
     Error(_) -> Error(FileError(path, "Could not read file"))
     Ok(content) -> {
       case taffy.parse(content) {
-        Error(err) -> Error(YamlSyntaxError(taffy.error_message(err)))
+        Error(err) -> Error(YamlSyntaxError(err.message))
         Ok(value) -> Ok(value)
       }
     }

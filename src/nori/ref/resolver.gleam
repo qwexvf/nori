@@ -44,7 +44,7 @@ pub fn resolve_file(
     Error(_) -> Error(FileNotFound(entry_path))
     Ok(content) -> {
       case taffy.parse(content) {
-        Error(err) -> Error(ParseError(entry_path, taffy.error_message(err)))
+        Error(err) -> Error(ParseError(entry_path, err.message))
         Ok(root) -> {
           let base_dir = directory_of(entry_path)
           let ctx = types.new_context(base_dir, root)
@@ -211,7 +211,7 @@ fn load_or_cache(
         Error(_) -> Error(FileNotFound(path))
         Ok(content) -> {
           case taffy.parse(content) {
-            Error(err) -> Error(ParseError(path, taffy.error_message(err)))
+            Error(err) -> Error(ParseError(path, err.message))
             Ok(value) -> {
               let new_ctx =
                 RefContext(
