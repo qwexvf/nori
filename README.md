@@ -1,6 +1,6 @@
 # nori
 
-> **Work in progress** — nori is under active development. APIs may change. See [open issues](https://github.com/qwexvf/nori/issues) for known gaps.
+> **Under development** — APIs may change, use main branch.
 
 OpenAPI code generation for Gleam. Parse specs, generate types, routes, clients, middleware, and React Query/SWR hooks.
 
