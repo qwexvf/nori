@@ -30,8 +30,10 @@ Uses [taffy](https://github.com/qwexvf/taffy) for YAML parsing.
 ## Quick start
 
 ```bash
-# Add to your Gleam project
-gleam add nori
+# Add to your gleam.toml
+# [dependencies]
+# nori = { git = "https://github.com/qwexvf/nori", ref = "main" }
+# taffy = { git = "https://github.com/qwexvf/taffy", ref = "main" }
 
 # Initialize (creates config, templates, starter spec)
 gleam run -m nori/cli -- init
