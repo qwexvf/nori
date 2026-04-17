@@ -143,3 +143,5 @@ templates/
 gleam test    # Run tests (74 tests)
 gleam check   # Type check
 ```
+
+implemented with help of claude code
