@@ -1,8 +1,11 @@
 # nori
 
-> **Under development** — APIs may change, use main branch.
+[![Package Version](https://img.shields.io/hexpm/v/nori)](https://hex.pm/packages/nori)
+[![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/nori/)
 
 OpenAPI code generation for Gleam. Parse specs, generate types, routes, clients, middleware, and React Query/SWR hooks.
+
+> **α release** — public APIs may shift before 1.0. Generated code is stable and tested end-to-end against compiled Gleam projects.
 
 Uses [taffy](https://github.com/qwexvf/taffy) for YAML parsing.
 
@@ -16,25 +19,25 @@ Uses [taffy](https://github.com/qwexvf/taffy) for YAML parsing.
 | Generate Gleam types + decoders + encoders | Working |
 | Generate Gleam route matching | Working |
 | Generate Gleam middleware (auth, CORS) | Working |
+| Generate Gleam HTTP client | Working |
 | Generate TypeScript types | Working |
 | Generate TypeScript fetch client | Working |
 | Generate React Query hooks | Working |
 | Generate SWR hooks | Working |
 | Customizable templates (handles) | Working |
 | Config file support | Working |
-| Schema validation constraints in decoder | [Incomplete](https://github.com/qwexvf/nori/issues/1) |
-| Extension fields (x-*) parsing | [Not yet](https://github.com/qwexvf/nori/issues/2) |
-| Generated Gleam client imports | [Bug](https://github.com/qwexvf/nori/issues/4) |
+| Schema validation constraints in decoder | [Incomplete](https://github.com/qwexvf/nori/issues/3) |
 | Zod/Valibot validation generation | [Planned](https://github.com/qwexvf/nori/issues/7) |
+
+## Install
+
+```sh
+gleam add nori
+```
 
 ## Quick start
 
 ```bash
-# Add to your gleam.toml
-# [dependencies]
-# nori = { git = "https://github.com/qwexvf/nori", ref = "main" }
-# taffy = { git = "https://github.com/qwexvf/taffy", ref = "main" }
-
 # Initialize (creates config, templates, starter spec)
 gleam run -m nori/cli -- init
 
@@ -142,8 +145,10 @@ templates/
 ## Development
 
 ```bash
-gleam test    # Run tests (74 tests)
+gleam test    # Run tests (81 tests)
 gleam check   # Type check
 ```
 
-implemented with help of claude code
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

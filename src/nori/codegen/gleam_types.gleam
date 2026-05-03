@@ -108,8 +108,7 @@ fn uses_unknown(ir: CodegenIR) -> Bool {
     case td {
       ir.RecordType(_, fields, _) ->
         list.any(fields, fn(f) { ref_uses_unknown(f.type_ref) })
-      ir.UnionType(_, members, _, _) ->
-        list.any(members, ref_uses_unknown)
+      ir.UnionType(_, members, _, _) -> list.any(members, ref_uses_unknown)
       ir.AliasType(_, target, _) -> ref_uses_unknown(target)
       ir.EnumType(_, _, _) -> False
     }

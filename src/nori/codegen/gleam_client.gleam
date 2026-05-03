@@ -105,7 +105,8 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
     list.any(ir.endpoints, fn(ep) {
       list.any(ep.parameters, fn(p) { p.location == ir.HeaderParam })
     })
-  let needs_int = list.any(query_params, fn(p) { p.type_ref == Primitive(ir.PInt) })
+  let needs_int =
+    list.any(query_params, fn(p) { p.type_ref == Primitive(ir.PInt) })
   let needs_float =
     list.any(query_params, fn(p) { p.type_ref == Primitive(ir.PFloat) })
   let needs_bool =
@@ -432,8 +433,7 @@ fn build_param_args(
     |> list.map(fn(p) {
       let type_str = case p.required {
         True -> type_ref_to_string(p.type_ref, name_prefix)
-        False ->
-          "Option(" <> type_ref_to_string(p.type_ref, name_prefix) <> ")"
+        False -> "Option(" <> type_ref_to_string(p.type_ref, name_prefix) <> ")"
       }
       ", " <> to_snake_case(p.name) <> ": " <> type_str
     })
@@ -547,8 +547,10 @@ fn type_ref_to_string(ref: TypeRef, name_prefix: String) -> String {
       <> ", "
       <> type_ref_to_string(value, name_prefix)
       <> ")"
-    Nullable(inner) -> "Option(" <> type_ref_to_string(inner, name_prefix) <> ")"
-    Optional(inner) -> "Option(" <> type_ref_to_string(inner, name_prefix) <> ")"
+    Nullable(inner) ->
+      "Option(" <> type_ref_to_string(inner, name_prefix) <> ")"
+    Optional(inner) ->
+      "Option(" <> type_ref_to_string(inner, name_prefix) <> ")"
     ir.Literal(_) -> "String"
     ir.Unknown -> "Dynamic"
   }

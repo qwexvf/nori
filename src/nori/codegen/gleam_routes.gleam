@@ -86,7 +86,9 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
   let method_imports = case used_methods {
     [] -> "import gleam/http.{type Method}"
     _ ->
-      "import gleam/http.{type Method, " <> string.join(used_methods, ", ") <> "}"
+      "import gleam/http.{type Method, "
+      <> string.join(used_methods, ", ")
+      <> "}"
   }
 
   // Handler aliases reference Dynamic when an inline schema collapsed to Unknown.

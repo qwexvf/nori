@@ -3,6 +3,7 @@ version = "0.1.1"
 description = "OpenAPI code generation for Gleam — parse specs, generate types, routes, clients, and React Query/SWR hooks"
 licences = ["Apache-2.0"]
 repository = { type = "github", user = "qwexvf", repo = "nori" }
+gleam = ">= 1.15.0"
 
 [dependencies]
 gleam_stdlib = ">= 0.44.0 and < 2.0.0"
