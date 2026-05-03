@@ -1,5 +1,5 @@
 name = "nori"
-version = "0.1.0"
+version = "0.1.1"
 description = "OpenAPI code generation for Gleam — parse specs, generate types, routes, clients, and React Query/SWR hooks"
 licences = ["Apache-2.0"]
 repository = { type = "github", user = "qwexvf", repo = "nori" }
