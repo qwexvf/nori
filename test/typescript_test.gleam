@@ -5,6 +5,7 @@ import nori/codegen/ir.{
   type CodegenIR, CodegenIR, Endpoint, EndpointParam, EnumVariant, Field, Named,
   Primitive, RecordType, RequestBodyIR, ResponseIR,
 }
+import nori/codegen/typescript/fetch_client
 import nori/codegen/typescript/react_query
 import nori/codegen/typescript/types
 
@@ -241,5 +242,54 @@ pub fn generate_react_query_imports_test() {
 
   output
   |> string.contains("from \"./client.generated\"")
+  |> should.be_true
+}
+
+// Fetch client generation tests
+
+pub fn generate_fetch_client_no_cookie_auth_test() {
+  // Without cookie auth, credentials default to undefined and surface the
+  // override knob without forcing "include".
+  let output = fetch_client.generate(sample_ir())
+
+  output
+  |> string.contains("credentials?: RequestCredentials;")
+  |> should.be_true
+
+  output
+  |> string.contains("baseUrl: \"\", credentials: undefined")
+  |> should.be_true
+
+  output
+  |> string.contains("credentials: _config.credentials,")
+  |> should.be_true
+
+  // Improved error body parsing
+  output
+  |> string.contains("await response.clone().json()")
+  |> should.be_true
+}
+
+pub fn generate_fetch_client_cookie_auth_test() {
+  // With ApiKeyAuth(_, _, InCookie), the generated client defaults
+  // credentials to "include" so the browser sends the session cookie.
+  let base = sample_ir()
+  let with_cookie =
+    CodegenIR(..base, security_schemes: [
+      ir.ApiKeyAuth(
+        name: "cookieAuth",
+        param_name: "session",
+        location: ir.InCookie,
+      ),
+    ])
+
+  let output = fetch_client.generate(with_cookie)
+
+  output
+  |> string.contains("credentials: _config.credentials ?? \"include\"")
+  |> should.be_true
+
+  output
+  |> string.contains("baseUrl: \"\", credentials: \"include\"")
   |> should.be_true
 }

@@ -13,11 +13,17 @@ import nori/codegen/ir.{
 }
 
 /// Generates a complete Gleam middleware module string from the CodegenIR.
-pub fn generate(ir: CodegenIR) -> String {
-  let header = generate_header(ir)
+///
+/// `module_prefix` is the Gleam module path of the generated output directory
+/// (e.g. `"generated"` for `./src/generated`). When non-empty the middleware
+/// imports the consumer's routes module so `is_public_route` can match on
+/// `Route` variants directly. When empty the function is emitted commented
+/// out with a hint, matching the pre-prefix behavior.
+pub fn generate(ir: CodegenIR, module_prefix: String) -> String {
+  let header = generate_header(ir, module_prefix)
   let types = generate_types(ir.security_schemes)
   let extractors = generate_extractors(ir.security_schemes)
-  let public_route_fn = generate_is_public_route(ir)
+  let public_route_fn = generate_is_public_route(ir, module_prefix)
   let middleware_builders = generate_middleware_builders(ir.security_schemes)
   let request_validation = generate_request_validation()
   let cors = generate_cors()
@@ -50,22 +56,29 @@ pub fn generate(ir: CodegenIR) -> String {
 // Header
 // ---------------------------------------------------------------------------
 
-fn generate_header(ir: CodegenIR) -> String {
+fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
   let title_comment =
     "//// Generated middleware from " <> ir.title <> " v" <> ir.version
+  let routes_import = case module_prefix {
+    "" ->
+      "// NOTE: Could not infer your routes module path.\n"
+      <> "// Import your generated routes module manually, e.g.:\n"
+      <> "// import your_app/generated/routes"
+    prefix -> "import " <> prefix <> "/routes"
+  }
   string.join(
     [
       title_comment,
       "////",
       "//// Auth extractors, route guards, and composable middleware.",
       "",
+      "import gleam/http",
       "import gleam/http/request.{type Request}",
       "import gleam/http/response.{type Response}",
       "import gleam/json",
+      "import gleam/list",
       "import gleam/string",
-      "import gleam/string_tree",
-      "// TODO: Import your generated routes module",
-      "// import your_app/generated/routes.{type Route}",
+      routes_import,
     ],
     "\n",
   )
@@ -84,7 +97,7 @@ fn generate_types(schemes: List(SecuritySchemeIR)) -> String {
         "// ---------------------------------------------------------------------------",
         "",
         "/// A middleware function that wraps a handler.",
-        "pub type Middleware =",
+        "pub type Middleware(a, b) =",
         "  fn(Request(a), fn(Request(a)) -> Response(b)) -> Response(b)",
       ],
       "\n",
@@ -388,7 +401,7 @@ fn generate_oidc_extractor(name: String) -> String {
 // is_public_route
 // ---------------------------------------------------------------------------
 
-fn generate_is_public_route(ir: CodegenIR) -> String {
+fn generate_is_public_route(ir: CodegenIR, module_prefix: String) -> String {
   let public_endpoints =
     ir.endpoints
     |> list.filter(fn(ep) {
@@ -404,6 +417,12 @@ fn generate_is_public_route(ir: CodegenIR) -> String {
     _ -> True
   }
 
+  // When the routes module is imported, variants must be qualified.
+  let variant_prefix = case module_prefix {
+    "" -> ""
+    _ -> "routes."
+  }
+
   let route_cases = case public_endpoints {
     [] ->
       case has_global_security {
@@ -416,7 +435,10 @@ fn generate_is_public_route(ir: CodegenIR) -> String {
       let public_cases =
         endpoints
         |> list.map(fn(ep) {
-          "    " <> to_pascal_case(ep.operation_id) <> " -> True"
+          "    "
+          <> variant_prefix
+          <> to_pascal_case(ep.operation_id)
+          <> " -> True"
         })
         |> string.join("\n")
 
@@ -429,26 +451,38 @@ fn generate_is_public_route(ir: CodegenIR) -> String {
     }
   }
 
-  string.join(
-    [
-      "// ---------------------------------------------------------------------------",
-      "// Route auth requirements",
-      "// ---------------------------------------------------------------------------",
-      "",
-      "/// Check if a route requires authentication.",
-      "/// Returns True if the route is public (no auth needed).",
-      "/// Generated from endpoint security overrides and global security settings.",
-      "// NOTE: Uncomment and adjust once your Route type is imported.",
-      "// pub fn is_public_route(route: Route) -> Bool {",
-      "//   case route {",
-      string.split(route_cases, "\n")
+  let banner =
+    "// ---------------------------------------------------------------------------\n"
+    <> "// Route auth requirements\n"
+    <> "// ---------------------------------------------------------------------------\n"
+    <> "\n"
+    <> "/// Check if a route requires authentication.\n"
+    <> "/// Returns True if the route is public (no auth needed).\n"
+    <> "/// Generated from endpoint security overrides and global security settings."
+
+  case module_prefix {
+    "" -> {
+      // Fallback: emit commented (no Route type available to import).
+      let commented =
+        string.split(route_cases, "\n")
         |> list.map(fn(line) { "//   " <> line })
-        |> string.join("\n"),
-      "//   }",
-      "// }",
-    ],
-    "\n",
-  )
+        |> string.join("\n")
+      banner
+      <> "\n// NOTE: Uncomment and adjust once your Route type is imported.\n"
+      <> "// pub fn is_public_route(route: Route) -> Bool {\n"
+      <> "//   case route {\n"
+      <> commented
+      <> "\n//   }\n"
+      <> "// }"
+    }
+    _ ->
+      banner
+      <> "\npub fn is_public_route(route: routes.Route) -> Bool {\n"
+      <> "  case route {\n"
+      <> route_cases
+      <> "\n  }\n"
+      <> "}"
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -654,8 +688,8 @@ fn generate_request_validation() -> String {
       "/// Use for POST/PUT/PATCH routes that expect a JSON body.",
       "pub fn require_json_content_type(",
       "  req: Request(a),",
-      "  next: fn() -> Response(b),",
-      ") -> Response(b) {",
+      "  next: fn() -> Response(String),",
+      ") -> Response(String) {",
       "  case request.get_header(req, \"content-type\") {",
       "    Ok(ct) -> {",
       "      case string.contains(ct, \"application/json\") {",
@@ -689,8 +723,8 @@ fn generate_cors() -> String {
       "pub fn cors(",
       "  allowed_origins: List(String),",
       "  req: Request(a),",
-      "  next: fn(Request(a)) -> Response(b),",
-      ") -> Response(b) {",
+      "  next: fn(Request(a)) -> Response(String),",
+      ") -> Response(String) {",
       "  let origin = case request.get_header(req, \"origin\") {",
       "    Ok(o) -> o",
       "    Error(_) -> \"\"",
@@ -740,13 +774,13 @@ fn generate_helpers() -> String {
       "// ---------------------------------------------------------------------------",
       "",
       "/// Return a JSON error response with the given message and status code.",
-      "pub fn json_error_response(message: String, status: Int) -> Response(b) {",
+      "pub fn json_error_response(message: String, status: Int) -> Response(String) {",
       "  let body =",
       "    json.object([#(\"error\", json.string(message))])",
       "    |> json.to_string",
       "  response.new(status)",
       "  |> response.set_header(\"content-type\", \"application/json\")",
-      "  |> response.set_body(string_tree.from_string(body))",
+      "  |> response.set_body(body)",
       "}",
     ],
     "\n",

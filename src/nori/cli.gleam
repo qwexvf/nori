@@ -8,6 +8,7 @@ import gleam/dict
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/result
 import gleam/string
 import glint
 import nori/bundler
@@ -244,6 +245,7 @@ fn generate_gleam(
   codegen_ir: CodegenIR,
   tc: TargetConfig,
 ) -> List(plugin.GeneratedFile) {
+  let module_prefix = derive_module_prefix(tc.dir)
   [
     plugin.GeneratedFile(
       path: tc.dir <> "/" <> suffix(tc, "types", ".gleam"),
@@ -251,17 +253,70 @@ fn generate_gleam(
     ),
     plugin.GeneratedFile(
       path: tc.dir <> "/" <> suffix(tc, "client", ".gleam"),
-      content: gleam_client.generate(codegen_ir),
+      content: gleam_client.generate(codegen_ir, module_prefix),
     ),
     plugin.GeneratedFile(
       path: tc.dir <> "/" <> suffix(tc, "routes", ".gleam"),
-      content: gleam_routes.generate(codegen_ir),
+      content: gleam_routes.generate(codegen_ir, module_prefix),
     ),
     plugin.GeneratedFile(
       path: tc.dir <> "/" <> suffix(tc, "middleware", ".gleam"),
-      content: gleam_middleware.generate(codegen_ir),
+      content: gleam_middleware.generate(codegen_ir, module_prefix),
     ),
   ]
+}
+
+/// Derive a Gleam module prefix from the configured output directory.
+///
+/// Looks for a `src/` segment anywhere in the path and takes everything after
+/// it (Gleam module paths are rooted at `src/`). Falls back to stripping a
+/// leading `./` if no `src/` is found.
+///
+/// Examples:
+///   "./src/generated"          -> "generated"
+///   "src/generated"            -> "generated"
+///   "/tmp/proj/src/api/gen"    -> "api/gen"
+///   "./generated"              -> "generated"  (no src/ — strip leading ./)
+///   "src" or "./src"           -> ""           (top-level — no prefix)
+///
+/// Returning "" disables real-import emission and falls back to a comment hint.
+fn derive_module_prefix(dir: String) -> String {
+  let trimmed =
+    dir
+    |> string.trim
+    |> drop_suffix("/")
+
+  // Take everything after the LAST "/src/" segment in case the project path
+  // itself contains a directory named "src".
+  let parts = string.split(trimmed, "/src/")
+  case parts {
+    [_] ->
+      case trimmed == "src" || trimmed == "./src" {
+        True -> ""
+        False ->
+          trimmed
+          |> drop_prefix("./")
+          |> drop_prefix("/")
+      }
+    _ ->
+      parts
+      |> list.last
+      |> result.unwrap("")
+  }
+}
+
+fn drop_prefix(s: String, prefix: String) -> String {
+  case string.starts_with(s, prefix) {
+    True -> string.drop_start(s, string.length(prefix))
+    False -> s
+  }
+}
+
+fn drop_suffix(s: String, suffix: String) -> String {
+  case string.ends_with(s, suffix) {
+    True -> string.drop_end(s, string.length(suffix))
+    False -> s
+  }
 }
 
 fn generate_typescript(

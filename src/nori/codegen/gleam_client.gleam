@@ -12,13 +12,22 @@ import nori/codegen/ir.{
 }
 
 /// Generates a complete Gleam client module string from the CodegenIR.
-pub fn generate(ir: CodegenIR) -> String {
-  let header = generate_header(ir)
+///
+/// `module_prefix` is the Gleam module path of the generated output directory
+/// (e.g. `"generated"` for `./src/generated`). When non-empty the client
+/// imports the consumer's types module so decoders/encoders resolve; when
+/// empty a comment hint is emitted instead.
+pub fn generate(ir: CodegenIR, module_prefix: String) -> String {
+  let header = generate_header(ir, module_prefix)
   let config_type = generate_config_type()
   let error_type = generate_error_type()
+  let name_prefix = case module_prefix {
+    "" -> ""
+    _ -> "types."
+  }
   let endpoint_fns =
     ir.endpoints
-    |> list.map(generate_endpoint)
+    |> list.map(fn(ep) { generate_endpoint(ep, name_prefix) })
     |> string.join("\n\n")
 
   string.join(
@@ -31,28 +40,198 @@ pub fn generate(ir: CodegenIR) -> String {
 // Header
 // ---------------------------------------------------------------------------
 
-fn generate_header(ir: CodegenIR) -> String {
+fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
   let title_comment =
     "//// Generated HTTP client from " <> ir.title <> " v" <> ir.version
-  string.join(
+
+  let referenced_types =
+    ir.endpoints
+    |> list.flat_map(fn(ep) {
+      let body_types = case ep.request_body {
+        Some(body) -> collect_named_types(body.type_ref)
+        None -> []
+      }
+      let response_types =
+        ep.responses
+        |> list.flat_map(fn(r) {
+          case r.type_ref {
+            Some(ref) -> collect_named_types(ref)
+            None -> []
+          }
+        })
+      list.append(body_types, response_types)
+    })
+    |> list.unique
+
+  let types_import = case module_prefix, referenced_types {
+    _, [] -> ""
+    "", types ->
+      "\n// NOTE: This client references these types from your types module:\n"
+      <> "// "
+      <> string.join(types, ", ")
+      <> "\n"
+      <> "// Make sure to import them and the matching decoders/encoders, e.g.:\n"
+      <> "// import your_app/generated/types"
+    prefix, _ -> "\nimport " <> prefix <> "/types"
+  }
+
+  // Only import the HTTP method constructors actually used by request fns.
+  let used_methods =
+    ir.endpoints
+    |> list.map(fn(ep) { method_to_string(ep.method) })
+    |> list.unique
+    |> list.sort(string.compare)
+  let method_imports = case used_methods {
+    [] -> ""
+    _ -> "import gleam/http.{" <> string.join(used_methods, ", ") <> "}"
+  }
+
+  let query_params =
+    ir.endpoints
+    |> list.flat_map(fn(ep) {
+      list.filter(ep.parameters, fn(p) { p.location == ir.QueryParam })
+    })
+  let path_or_query_present = case
+    list.any(ir.endpoints, fn(ep) {
+      list.any(ep.parameters, fn(p) {
+        p.location == ir.PathParam || p.location == ir.QueryParam
+      })
+    })
+  {
+    True -> True
+    False -> False
+  }
+  let header_present =
+    list.any(ir.endpoints, fn(ep) {
+      list.any(ep.parameters, fn(p) { p.location == ir.HeaderParam })
+    })
+  let needs_int = list.any(query_params, fn(p) { p.type_ref == Primitive(ir.PInt) })
+  let needs_float =
+    list.any(query_params, fn(p) { p.type_ref == Primitive(ir.PFloat) })
+  let needs_bool =
+    list.any(query_params, fn(p) { p.type_ref == Primitive(ir.PBool) })
+  let needs_uri = case query_params {
+    [] -> False
+    _ -> True
+  }
+  let needs_string = path_or_query_present || header_present
+  let needs_list = case ir.endpoints {
+    [] -> False
+    _ -> True
+  }
+  let needs_decode =
+    list.any(ir.endpoints, fn(ep) {
+      list.any(ep.responses, fn(r) {
+        case r.type_ref {
+          Some(_) -> True
+          None -> False
+        }
+      })
+    })
+
+  // Option appears in signatures via Nullable/Optional wraps OR optional query
+  // params (where each `option.Some(v) -> ...` pattern requires the module).
+  let needs_option =
+    list.any(query_params, fn(p) { !p.required })
+    || list.any(ir.endpoints, fn(ep) {
+      let resp_uses =
+        list.any(ep.responses, fn(r) {
+          case r.type_ref {
+            Some(ref) -> ref_uses_optional(ref)
+            None -> False
+          }
+        })
+      let body_uses = case ep.request_body {
+        Some(b) -> ref_uses_optional(b.type_ref)
+        None -> False
+      }
+      let param_uses =
+        list.any(ep.parameters, fn(p) { ref_uses_optional(p.type_ref) })
+      resp_uses || body_uses || param_uses
+    })
+
+  // Type refs in any signature can resolve to `Dynamic` (when ir.Unknown).
+  let needs_dynamic =
+    list.any(ir.endpoints, fn(ep) {
+      let resp_uses =
+        list.any(ep.responses, fn(r) {
+          case r.type_ref {
+            Some(ref) -> ref_uses_unknown(ref)
+            None -> False
+          }
+        })
+      let body_uses = case ep.request_body {
+        Some(b) -> ref_uses_unknown(b.type_ref)
+        None -> False
+      }
+      let param_uses =
+        list.any(ep.parameters, fn(p) { ref_uses_unknown(p.type_ref) })
+      resp_uses || body_uses || param_uses
+    })
+
+  let optional_imports = [
+    #(needs_dynamic, "import gleam/dynamic.{type Dynamic}"),
+    #(needs_decode, "import gleam/dynamic/decode"),
+    #(True, "import gleam/json"),
+    #(needs_option, "import gleam/option.{type Option}"),
+    #(needs_int, "import gleam/int"),
+    #(needs_float, "import gleam/float"),
+    #(needs_bool, "import gleam/bool"),
+    #(needs_string, "import gleam/string"),
+    #(needs_list, "import gleam/list"),
+    #(needs_uri, "import gleam/uri"),
+  ]
+  let lines =
     [
       title_comment,
       "",
-      "import gleam/http.{type Method, Delete, Get, Head, Options, Patch, Post, Put}",
+      method_imports,
       "import gleam/http/request.{type Request}",
       "import gleam/http/response.{type Response}",
-      "import gleam/dynamic/decode",
-      "import gleam/json",
-      "import gleam/option.{type Option, None, Some}",
-      "import gleam/int",
-      "import gleam/float",
-      "import gleam/bool",
-      "import gleam/string",
-      "import gleam/list",
-      "import gleam/uri",
-    ],
-    "\n",
-  )
+    ]
+    |> list.append(
+      optional_imports
+      |> list.filter_map(fn(pair) {
+        case pair.0 {
+          True -> Ok(pair.1)
+          False -> Error(Nil)
+        }
+      }),
+    )
+
+  string.join(lines, "\n") <> types_import
+}
+
+fn collect_named_types(ref: TypeRef) -> List(String) {
+  case ref {
+    Named(name) -> [name]
+    Array(item) -> collect_named_types(item)
+    ir.Dict(key, value) ->
+      list.append(collect_named_types(key), collect_named_types(value))
+    Nullable(inner) -> collect_named_types(inner)
+    Optional(inner) -> collect_named_types(inner)
+    _ -> []
+  }
+}
+
+fn ref_uses_unknown(ref: TypeRef) -> Bool {
+  case ref {
+    ir.Unknown -> True
+    Array(item) -> ref_uses_unknown(item)
+    ir.Dict(k, v) -> ref_uses_unknown(k) || ref_uses_unknown(v)
+    Nullable(inner) -> ref_uses_unknown(inner)
+    Optional(inner) -> ref_uses_unknown(inner)
+    _ -> False
+  }
+}
+
+fn ref_uses_optional(ref: TypeRef) -> Bool {
+  case ref {
+    Nullable(_) | Optional(_) -> True
+    Array(item) -> ref_uses_optional(item)
+    ir.Dict(k, v) -> ref_uses_optional(k) || ref_uses_optional(v)
+    _ -> False
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -93,13 +272,13 @@ fn generate_error_type() -> String {
 // Per-endpoint generation
 // ---------------------------------------------------------------------------
 
-fn generate_endpoint(endpoint: Endpoint) -> String {
-  let request_fn = generate_request_fn(endpoint)
-  let response_fn = generate_response_fn(endpoint)
+fn generate_endpoint(endpoint: Endpoint, name_prefix: String) -> String {
+  let request_fn = generate_request_fn(endpoint, name_prefix)
+  let response_fn = generate_response_fn(endpoint, name_prefix)
   request_fn <> "\n\n" <> response_fn
 }
 
-fn generate_request_fn(endpoint: Endpoint) -> String {
+fn generate_request_fn(endpoint: Endpoint, name_prefix: String) -> String {
   let fn_name = to_snake_case(endpoint.operation_id) <> "_request"
   let method_str = method_to_string(endpoint.method)
 
@@ -120,6 +299,7 @@ fn generate_request_fn(endpoint: Endpoint) -> String {
       query_params,
       header_params,
       endpoint.request_body,
+      name_prefix,
     )
   let all_args = "config: ClientConfig" <> param_args
 
@@ -138,7 +318,7 @@ fn generate_request_fn(endpoint: Endpoint) -> String {
   // Build request body
   let body_section = case endpoint.request_body {
     Some(body) -> {
-      let encoder = type_ref_encoder_call("body", body.type_ref)
+      let encoder = type_ref_encoder_call("body", body.type_ref, name_prefix)
       "\n  |> request.set_body(json.to_string(" <> encoder <> "))"
     }
     None -> ""
@@ -186,7 +366,7 @@ fn generate_request_fn(endpoint: Endpoint) -> String {
   <> "\n}"
 }
 
-fn generate_response_fn(endpoint: Endpoint) -> String {
+fn generate_response_fn(endpoint: Endpoint, name_prefix: String) -> String {
   let fn_name = "decode_" <> to_snake_case(endpoint.operation_id) <> "_response"
 
   // Find the success response (2xx)
@@ -197,7 +377,7 @@ fn generate_response_fn(endpoint: Endpoint) -> String {
   let return_type = case success_response {
     Ok(resp) ->
       case resp.type_ref {
-        Some(ref) -> type_ref_to_string(ref)
+        Some(ref) -> type_ref_to_string(ref, name_prefix)
         None -> "Nil"
       }
     Error(_) -> "Nil"
@@ -207,17 +387,17 @@ fn generate_response_fn(endpoint: Endpoint) -> String {
     Ok(resp) ->
       case resp.type_ref {
         Some(ref) -> {
-          let decoder = type_ref_decoder_call(ref)
-          "    case decode.run(dynamic, "
+          let decoder = type_ref_decoder_call(ref, name_prefix)
+          "      case json.parse(resp.body, "
           <> decoder
           <> ") {\n"
-          <> "      Ok(value) -> Ok(value)\n"
-          <> "      Error(_) -> Error(DecodeError(\"Failed to decode response\"))\n"
-          <> "    }"
+          <> "        Ok(value) -> Ok(value)\n"
+          <> "        Error(_) -> Error(DecodeError(\"Failed to decode response\"))\n"
+          <> "      }"
         }
-        None -> "    Ok(Nil)"
+        None -> "      Ok(Nil)"
       }
-    Error(_) -> "    Ok(Nil)"
+    Error(_) -> "      Ok(Nil)"
   }
 
   "pub fn "
@@ -227,7 +407,6 @@ fn generate_response_fn(endpoint: Endpoint) -> String {
   <> ", ClientError) {\n"
   <> "  case resp.status {\n"
   <> "    status if status >= 200 && status < 300 -> {\n"
-  <> "      let dynamic = json.parse(resp.body, decode.dynamic)\n"
   <> decode_body
   <> "\n    }\n"
   <> "    status -> Error(UnexpectedStatus(status: status, body: resp.body))\n"
@@ -243,6 +422,7 @@ fn build_param_args(
   query_params: List(EndpointParam),
   header_params: List(EndpointParam),
   body: option.Option(ir.RequestBodyIR),
+  name_prefix: String,
 ) -> String {
   let path_args =
     path_params
@@ -251,8 +431,9 @@ fn build_param_args(
     query_params
     |> list.map(fn(p) {
       let type_str = case p.required {
-        True -> type_ref_to_string(p.type_ref)
-        False -> "Option(" <> type_ref_to_string(p.type_ref) <> ")"
+        True -> type_ref_to_string(p.type_ref, name_prefix)
+        False ->
+          "Option(" <> type_ref_to_string(p.type_ref, name_prefix) <> ")"
       }
       ", " <> to_snake_case(p.name) <> ": " <> type_str
     })
@@ -260,7 +441,7 @@ fn build_param_args(
     header_params
     |> list.map(fn(p) { ", " <> to_snake_case(p.name) <> ": String" })
   let body_arg = case body {
-    Some(b) -> [", body: " <> type_ref_to_string(b.type_ref)]
+    Some(b) -> [", body: " <> type_ref_to_string(b.type_ref, name_prefix)]
     None -> []
   }
   list.flatten([path_args, query_args, header_args, body_arg])
@@ -355,19 +536,19 @@ fn method_to_string(method: ir.HttpMethod) -> String {
   }
 }
 
-fn type_ref_to_string(ref: TypeRef) -> String {
+fn type_ref_to_string(ref: TypeRef, name_prefix: String) -> String {
   case ref {
-    Named(name) -> name
+    Named(name) -> name_prefix <> name
     Primitive(p) -> primitive_to_string(p)
-    Array(item) -> "List(" <> type_ref_to_string(item) <> ")"
+    Array(item) -> "List(" <> type_ref_to_string(item, name_prefix) <> ")"
     ir.Dict(key, value) ->
       "Dict("
-      <> type_ref_to_string(key)
+      <> type_ref_to_string(key, name_prefix)
       <> ", "
-      <> type_ref_to_string(value)
+      <> type_ref_to_string(value, name_prefix)
       <> ")"
-    Nullable(inner) -> "Option(" <> type_ref_to_string(inner) <> ")"
-    Optional(inner) -> "Option(" <> type_ref_to_string(inner) <> ")"
+    Nullable(inner) -> "Option(" <> type_ref_to_string(inner, name_prefix) <> ")"
+    Optional(inner) -> "Option(" <> type_ref_to_string(inner, name_prefix) <> ")"
     ir.Literal(_) -> "String"
     ir.Unknown -> "Dynamic"
   }
@@ -386,9 +567,14 @@ fn primitive_to_string(p: ir.PrimitiveType) -> String {
   }
 }
 
-fn type_ref_encoder_call(expr: String, ref: TypeRef) -> String {
+fn type_ref_encoder_call(
+  expr: String,
+  ref: TypeRef,
+  name_prefix: String,
+) -> String {
   case ref {
-    Named(name) -> "encode_" <> to_snake_case(name) <> "(" <> expr <> ")"
+    Named(name) ->
+      name_prefix <> "encode_" <> to_snake_case(name) <> "(" <> expr <> ")"
     Primitive(ir.PString) -> "json.string(" <> expr <> ")"
     Primitive(ir.PInt) -> "json.int(" <> expr <> ")"
     Primitive(ir.PFloat) -> "json.float(" <> expr <> ")"
@@ -397,14 +583,15 @@ fn type_ref_encoder_call(expr: String, ref: TypeRef) -> String {
   }
 }
 
-fn type_ref_decoder_call(ref: TypeRef) -> String {
+fn type_ref_decoder_call(ref: TypeRef, name_prefix: String) -> String {
   case ref {
-    Named(name) -> to_snake_case(name) <> "_decoder()"
+    Named(name) -> name_prefix <> to_snake_case(name) <> "_decoder()"
     Primitive(ir.PString) -> "decode.string"
     Primitive(ir.PInt) -> "decode.int"
     Primitive(ir.PFloat) -> "decode.float"
     Primitive(ir.PBool) -> "decode.bool"
-    Array(item) -> "decode.list(" <> type_ref_decoder_call(item) <> ")"
+    Array(item) ->
+      "decode.list(" <> type_ref_decoder_call(item, name_prefix) <> ")"
     _ -> "decode.dynamic"
   }
 }

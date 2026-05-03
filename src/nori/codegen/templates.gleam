@@ -11,8 +11,9 @@ import handles
 import handles/ctx.{type Value}
 import nori/codegen/ir.{
   type CodegenIR, type Endpoint, type EndpointParam, type Field, type HttpMethod,
-  type ResponseIR, type TypeDef, AliasType, Delete, EnumType, Get, Head, Options,
-  Patch, PathParam, Post, Put, QueryParam, RecordType, RequestBodyIR, UnionType,
+  type ResponseIR, type TypeDef, AliasType, ApiKeyAuth, Delete, EnumType, Get,
+  Head, InCookie, Options, Patch, PathParam, Post, Put, QueryParam, RecordType,
+  RequestBodyIR, UnionType,
 }
 import nori/codegen/typescript/shared
 import simplifile
@@ -243,19 +244,46 @@ fn field_to_ctx(field: Field, config: TsConfig) -> Value {
 
 pub fn ir_to_ts_client_context(ir: CodegenIR) -> Value {
   let type_imports = generate_type_imports(ir)
+  let cookie_auth = has_cookie_auth(ir)
 
   let config_type =
-    "export interface ClientConfig {\n  baseUrl: string;\n  headers?: Record<string, string>;\n}"
+    "export interface ClientConfig {\n"
+    <> "  baseUrl: string;\n"
+    <> "  headers?: Record<string, string>;\n"
+    <> "  /** Override fetch credentials mode (defaults to 'include' when the spec uses cookie auth). */\n"
+    <> "  credentials?: RequestCredentials;\n"
+    <> "}"
+
+  let default_credentials = case cookie_auth {
+    True -> "\"include\""
+    False -> "undefined"
+  }
 
   let create_client =
-    "let _config: ClientConfig = { baseUrl: \"\" };\n\nexport function configure(config: ClientConfig): void {\n  _config = config;\n}\n\nfunction getHeaders(): Record<string, string> {\n  return {\n    \"Content-Type\": \"application/json\",\n    ...(_config.headers ?? {}),\n  };\n}"
+    "let _config: ClientConfig = { baseUrl: \"\", credentials: "
+    <> default_credentials
+    <> " };\n\n"
+    <> "export function configure(config: ClientConfig): void {\n"
+    <> "  _config = { credentials: "
+    <> default_credentials
+    <> ", ...config };\n"
+    <> "}\n\n"
+    <> "function getHeaders(): Record<string, string> {\n"
+    <> "  return {\n"
+    <> "    \"Content-Type\": \"application/json\",\n"
+    <> "    ...(_config.headers ?? {}),\n"
+    <> "  };\n"
+    <> "}"
 
   let fn_count = list.length(ir.endpoints)
   let functions =
     ir.endpoints
     |> list.index_map(fn(ep, idx) {
       ctx.Dict([
-        ctx.Prop("function_text", ctx.Str(generate_endpoint_function(ep))),
+        ctx.Prop(
+          "function_text",
+          ctx.Str(generate_endpoint_function(ep, cookie_auth)),
+        ),
         ctx.Prop("is_last", ctx.Bool(idx == fn_count - 1)),
       ])
     })
@@ -268,7 +296,19 @@ pub fn ir_to_ts_client_context(ir: CodegenIR) -> Value {
   ])
 }
 
-fn generate_endpoint_function(endpoint: Endpoint) -> String {
+/// True if any security scheme places an API key in a cookie. Generated TS
+/// fetch calls then default to `credentials: "include"` so browsers send the
+/// session cookie cross-origin.
+fn has_cookie_auth(ir: CodegenIR) -> Bool {
+  list.any(ir.security_schemes, fn(s) {
+    case s {
+      ApiKeyAuth(_, _, InCookie) -> True
+      _ -> False
+    }
+  })
+}
+
+fn generate_endpoint_function(endpoint: Endpoint, cookie_auth: Bool) -> String {
   let fn_name = shared.to_camel_case(endpoint.operation_id)
   let method = http_method_to_string(endpoint.method)
 
@@ -295,6 +335,14 @@ fn generate_endpoint_function(endpoint: Endpoint) -> String {
 
   let response_handling = build_response_handling(return_type)
 
+  // When the spec declares cookie-based auth, default to credentials:"include"
+  // so the browser sends the session cookie. Users can still override via
+  // ClientConfig.credentials.
+  let credentials_line = case cookie_auth {
+    True -> "    credentials: _config.credentials ?? \"include\",\n"
+    False -> "    credentials: _config.credentials,\n"
+  }
+
   deprecated_tag
   <> summary_comment
   <> "export async function "
@@ -310,11 +358,17 @@ fn generate_endpoint_function(endpoint: Endpoint) -> String {
   <> method
   <> "\",\n"
   <> "    headers: getHeaders(),\n"
+  <> credentials_line
   <> fetch_options
   <> "  });\n"
   <> "\n"
   <> "  if (!response.ok) {\n"
-  <> "    throw new Error(`HTTP ${response.status}: ${response.statusText}`);\n"
+  <> "    let detail: string = response.statusText;\n"
+  <> "    try {\n"
+  <> "      const errBody = await response.clone().json();\n"
+  <> "      if (errBody && typeof errBody.error === \"string\") detail = errBody.error;\n"
+  <> "    } catch {}\n"
+  <> "    throw new Error(`HTTP ${response.status}: ${detail}`);\n"
   <> "  }\n"
   <> "\n"
   <> response_handling

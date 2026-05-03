@@ -14,7 +14,7 @@ packages = [
   { name = "handles", version = "5.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "handles", source = "hex", outer_checksum = "99967BED02558973B5C55EF36264661F0E4BC4E672EB85D970D6FF7A774FAC7A" },
   { name = "simplifile", version = "2.4.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "7C18AFA4FED0B4CE1FA5B0B4BAC1FA1744427054EA993565F6F3F82E5453170D" },
   { name = "snag", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "snag", source = "hex", outer_checksum = "274F41D6C3ECF99F7686FDCE54183333E41D2C1CA5A3A673F9A8B2C7A4401077" },
-  { name = "taffy", version = "1.0.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib", "simplifile"], source = "local", path = "../taffy" },
+  { name = "taffy", version = "1.0.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib", "simplifile"], source = "git", repo = "https://github.com/qwexvf/taffy", commit = "ce8539513a410002b91e7feca9949c2f7df4cc95" },
 ]
 
 [requirements]
@@ -25,4 +25,4 @@ gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 glint = { version = ">= 1.0.0 and < 2.0.0" }
 handles = { version = ">= 5.0.0 and < 6.0.0" }
 simplifile = { version = ">= 2.4.0 and < 3.0.0" }
-taffy = { path = "../taffy" }
+taffy = { git = "https://github.com/qwexvf/taffy", ref = "main" }

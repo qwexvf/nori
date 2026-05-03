@@ -3,6 +3,7 @@ import gleam/string
 import gleeunit
 import gleeunit/should
 import nori/codegen/gleam_client
+import nori/codegen/gleam_middleware
 import nori/codegen/gleam_routes
 import nori/codegen/gleam_types
 import nori/codegen/ir.{
@@ -170,7 +171,7 @@ pub fn generate_gleam_types_test() {
 
 pub fn generate_gleam_client_test() {
   let ir = sample_ir()
-  let output = gleam_client.generate(ir)
+  let output = gleam_client.generate(ir, "generated")
 
   // Should contain config type
   output
@@ -196,11 +197,43 @@ pub fn generate_gleam_client_test() {
   output
   |> string.contains("pub type ClientError")
   |> should.be_true
+
+  // Bug 2 fix: real types import + qualified type / decoder references
+  output
+  |> string.contains("import generated/types")
+  |> should.be_true
+
+  output
+  |> string.contains("types.User")
+  |> should.be_true
+
+  output
+  |> string.contains("types.user_decoder()")
+  |> should.be_true
+
+  // Bug 2 fix: response decoding uses single json.parse, not decode.run
+  output
+  |> string.contains("json.parse(resp.body, types.user_decoder())")
+  |> should.be_true
+
+  output
+  |> string.contains("decode.run")
+  |> should.be_false
+}
+
+pub fn generate_gleam_client_no_prefix_test() {
+  let ir = sample_ir()
+  let output = gleam_client.generate(ir, "")
+
+  // Falls back to comment hint, references types unqualified, no real import
+  output
+  |> string.contains("// import your_app/generated/types")
+  |> should.be_true
 }
 
 pub fn generate_gleam_routes_test() {
   let ir = sample_ir()
-  let output = gleam_routes.generate(ir)
+  let output = gleam_routes.generate(ir, "generated")
 
   // Should contain route type
   output
@@ -233,6 +266,21 @@ pub fn generate_gleam_routes_test() {
   output
   |> string.contains("[\"users\", id]")
   |> should.be_true
+
+  // Bug 1 fix: real types import (each name prefixed with `type`)
+  output
+  |> string.contains("import generated/types.{type User}")
+  |> should.be_true
+}
+
+pub fn generate_gleam_routes_no_prefix_test() {
+  let ir = sample_ir()
+  let output = gleam_routes.generate(ir, "")
+
+  // Falls back to commented hint when prefix can't be derived
+  output
+  |> string.contains("// import your_app/generated/types.{type User}")
+  |> should.be_true
 }
 
 pub fn to_snake_case_test() {
@@ -247,4 +295,61 @@ pub fn to_snake_case_test() {
 
   gleam_types.to_snake_case("HTTPRequest")
   |> should.equal("h_t_t_p_request")
+}
+
+// Bug 3 — middleware compile fixes
+
+pub fn generate_gleam_middleware_imports_test() {
+  let output = gleam_middleware.generate(sample_ir(), "generated")
+
+  // Bug 3a: gleam/http and gleam/list must be imported (used by cors)
+  output
+  |> string.contains("import gleam/http")
+  |> should.be_true
+
+  output
+  |> string.contains("import gleam/list")
+  |> should.be_true
+
+  // Bug 3c: real routes import + uncommented is_public_route on routes.Route
+  output
+  |> string.contains("import generated/routes")
+  |> should.be_true
+
+  output
+  |> string.contains("pub fn is_public_route(route: routes.Route)")
+  |> should.be_true
+
+  // string_tree should no longer be imported (Bug 3b dropped its only use)
+  output
+  |> string.contains("import gleam/string_tree")
+  |> should.be_false
+}
+
+pub fn generate_gleam_middleware_json_error_response_test() {
+  let output = gleam_middleware.generate(sample_ir(), "generated")
+
+  // Bug 3b: json_error_response returns Response(String), not Response(b)
+  output
+  |> string.contains(
+    "pub fn json_error_response(message: String, status: Int) -> Response(String)",
+  )
+  |> should.be_true
+
+  output
+  |> string.contains("string_tree.from_string")
+  |> should.be_false
+}
+
+pub fn generate_gleam_middleware_no_prefix_test() {
+  let output = gleam_middleware.generate(sample_ir(), "")
+
+  // Without a derivable prefix, fall back to commented is_public_route + hint
+  output
+  |> string.contains("// import your_app/generated/routes")
+  |> should.be_true
+
+  output
+  |> string.contains("// pub fn is_public_route(route: Route)")
+  |> should.be_true
 }

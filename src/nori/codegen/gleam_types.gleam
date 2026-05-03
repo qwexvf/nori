@@ -74,17 +74,57 @@ fn is_upper(c: String) -> Bool {
 
 fn generate_header(ir: CodegenIR) -> String {
   let title_comment = "//// Generated from " <> ir.title <> " v" <> ir.version
-  string.join(
-    [
-      title_comment,
-      "",
-      "import gleam/dynamic.{type Dynamic}",
-      "import gleam/dynamic/decode.{type Decoder}",
-      "import gleam/json.{type Json}",
-      "import gleam/option.{type Option, None, Some}",
-    ],
-    "\n",
-  )
+
+  // For specs with no named schemas, skip the codec imports entirely so the
+  // module compiles cleanly (no "unused import" warnings).
+  case ir.types {
+    [] -> title_comment
+    _ -> {
+      let needs_dynamic = uses_unknown(ir)
+      let lines = case needs_dynamic {
+        True -> [
+          title_comment,
+          "",
+          "import gleam/dynamic.{type Dynamic}",
+          "import gleam/dynamic/decode.{type Decoder}",
+          "import gleam/json.{type Json}",
+          "import gleam/option.{type Option, None, Some}",
+        ]
+        False -> [
+          title_comment,
+          "",
+          "import gleam/dynamic/decode.{type Decoder}",
+          "import gleam/json.{type Json}",
+          "import gleam/option.{type Option, None, Some}",
+        ]
+      }
+      string.join(lines, "\n")
+    }
+  }
+}
+
+fn uses_unknown(ir: CodegenIR) -> Bool {
+  list.any(ir.types, fn(td) {
+    case td {
+      ir.RecordType(_, fields, _) ->
+        list.any(fields, fn(f) { ref_uses_unknown(f.type_ref) })
+      ir.UnionType(_, members, _, _) ->
+        list.any(members, ref_uses_unknown)
+      ir.AliasType(_, target, _) -> ref_uses_unknown(target)
+      ir.EnumType(_, _, _) -> False
+    }
+  })
+}
+
+fn ref_uses_unknown(ref: TypeRef) -> Bool {
+  case ref {
+    ir.Unknown -> True
+    ir.Array(item) -> ref_uses_unknown(item)
+    ir.Dict(k, v) -> ref_uses_unknown(k) || ref_uses_unknown(v)
+    ir.Nullable(inner) -> ref_uses_unknown(inner)
+    ir.Optional(inner) -> ref_uses_unknown(inner)
+    _ -> False
+  }
 }
 
 // ---------------------------------------------------------------------------

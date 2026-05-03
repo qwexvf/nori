@@ -12,8 +12,13 @@ import nori/codegen/ir.{
 }
 
 /// Generates a complete Gleam routes module string from the CodegenIR.
-pub fn generate(ir: CodegenIR) -> String {
-  let header = generate_header(ir)
+///
+/// `module_prefix` is the Gleam module path of the generated output directory
+/// (e.g. `"generated"` for `./src/generated`). When non-empty it's used to
+/// emit real imports for the consumer's types module; when empty a comment
+/// hint is produced instead.
+pub fn generate(ir: CodegenIR, module_prefix: String) -> String {
+  let header = generate_header(ir, module_prefix)
   let route_type = generate_route_type(ir.endpoints)
   let match_fn = generate_match_fn(ir.endpoints)
   let handler_types = generate_handler_types(ir.endpoints)
@@ -28,7 +33,7 @@ pub fn generate(ir: CodegenIR) -> String {
 // Header
 // ---------------------------------------------------------------------------
 
-fn generate_header(ir: CodegenIR) -> String {
+fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
   let title_comment =
     "//// Generated routes from " <> ir.title <> " v" <> ir.version
 
@@ -53,28 +58,73 @@ fn generate_header(ir: CodegenIR) -> String {
     })
     |> list.unique
 
-  let type_comment = case referenced_types {
-    [] -> ""
-    types ->
+  let types_import = case module_prefix, referenced_types {
+    _, [] -> ""
+    "", types ->
       "\n// NOTE: The handler types below reference these types from your types module:\n"
       <> "// "
       <> string.join(types, ", ")
       <> "\n"
       <> "// Make sure to import them, e.g.:\n"
-      <> "// import your_app/generated/types.{"
-      <> string.join(types, ", ")
+      <> "// import your_app/generated/types.{type "
+      <> string.join(types, ", type ")
+      <> "}"
+    prefix, types ->
+      "\nimport "
+      <> prefix
+      <> "/types.{type "
+      <> string.join(types, ", type ")
       <> "}"
   }
 
-  string.join(
-    [
-      title_comment,
-      "",
-      "import gleam/http.{type Method, Delete, Get, Head, Options, Patch, Post, Put}",
-    ],
-    "\n",
-  )
-  <> type_comment
+  // Only import the HTTP method constructors actually referenced in matches.
+  let used_methods =
+    ir.endpoints
+    |> list.map(fn(ep) { method_to_pattern(ep.method) })
+    |> list.unique
+    |> list.sort(string.compare)
+  let method_imports = case used_methods {
+    [] -> "import gleam/http.{type Method}"
+    _ ->
+      "import gleam/http.{type Method, " <> string.join(used_methods, ", ") <> "}"
+  }
+
+  // Handler aliases reference Dynamic when an inline schema collapsed to Unknown.
+  let needs_dynamic =
+    list.any(ir.endpoints, fn(ep) {
+      let resp_uses =
+        list.any(ep.responses, fn(r) {
+          case r.type_ref {
+            Some(ref) -> ref_uses_unknown(ref)
+            None -> False
+          }
+        })
+      let body_uses = case ep.request_body {
+        Some(b) -> ref_uses_unknown(b.type_ref)
+        None -> False
+      }
+      resp_uses || body_uses
+    })
+
+  let dynamic_import = case needs_dynamic {
+    True -> "\nimport gleam/dynamic.{type Dynamic}"
+    False -> ""
+  }
+
+  string.join([title_comment, "", method_imports], "\n")
+  <> dynamic_import
+  <> types_import
+}
+
+fn ref_uses_unknown(ref: TypeRef) -> Bool {
+  case ref {
+    ir.Unknown -> True
+    Array(item) -> ref_uses_unknown(item)
+    ir.Dict(k, v) -> ref_uses_unknown(k) || ref_uses_unknown(v)
+    Nullable(inner) -> ref_uses_unknown(inner)
+    Optional(inner) -> ref_uses_unknown(inner)
+    _ -> False
+  }
 }
 
 fn collect_named_types(ref: TypeRef) -> List(String) {
