@@ -41,6 +41,9 @@
 import gleam/dynamic/decode
 import gleam/json
 import gleam/string_tree
+import nori/capability.{type Issue}
+import nori/codegen/ir.{type CodegenIR}
+import nori/codegen/ir_builder
 import nori/decoder
 import nori/document.{type Document}
 import nori/encoder
@@ -154,4 +157,44 @@ pub fn parse_file(path: String) -> Result(Document, ParseError) {
     Error(nori_yaml.YamlDecodeError(errors)) -> Error(DecodeError(errors))
     Error(nori_yaml.FileError(_, msg)) -> Error(JsonParseError(msg))
   }
+}
+
+/// Walk a parsed document and collect any OpenAPI features nori does not yet
+/// support. Returns the document unchanged when nothing is flagged, otherwise
+/// a list of `Issue`s sorted with blocking severity first.
+///
+/// Use this before `build_ir` if you want to fail fast instead of producing
+/// degraded codegen output.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(doc) = nori.parse_file("api.yaml")
+/// case nori.check_capabilities(doc) {
+///   Ok(_) -> generate(doc)
+///   Error(issues) -> {
+///     list.each(issues, fn(i) { io.println(capability.issue_to_string(i)) })
+///   }
+/// }
+/// ```
+pub fn check_capabilities(doc: Document) -> Result(Document, List(Issue)) {
+  capability.check(doc)
+}
+
+/// Build a language-agnostic codegen intermediate representation from a
+/// parsed document.
+///
+/// `CodegenIR` is the contract between the parser and any code generator
+/// (built-in Gleam/TypeScript, or third-party satellite packages). Walk it
+/// directly to drive your own emitters.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(doc) = nori.parse_file("api.yaml")
+/// let codegen_ir = nori.build_ir(doc)
+/// // pass codegen_ir to your own generator
+/// ```
+pub fn build_ir(doc: Document) -> CodegenIR {
+  ir_builder.build(doc)
 }

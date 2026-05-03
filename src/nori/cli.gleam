@@ -12,6 +12,7 @@ import gleam/result
 import gleam/string
 import glint
 import nori/bundler
+import nori/capability
 import nori/codegen/gleam_client
 import nori/codegen/gleam_middleware
 import nori/codegen/gleam_routes
@@ -72,12 +73,20 @@ fn generate_command() -> glint.Command(Nil) {
     |> glint.flag_default("")
     |> glint.flag_help("Path to OpenAPI spec file (overrides config)"),
   )
+  use allow_unsupported <- glint.flag(
+    glint.bool_flag("allow-unsupported")
+    |> glint.flag_default(False)
+    |> glint.flag_help(
+      "Generate even if the spec uses capabilities nori does not support yet (output may be incomplete)",
+    ),
+  )
   use _named, _unnamed, flags <- glint.command()
 
   let assert Ok(target_val) = target(flags)
   let assert Ok(output_dir) = output(flags)
   let assert Ok(config_file) = config_path(flags)
   let assert Ok(spec_override) = spec_arg(flags)
+  let assert Ok(allow_unsupported_val) = allow_unsupported(flags)
 
   // Load config: try file, fall back to default
   let cfg = case config.load(config_file) {
@@ -105,19 +114,58 @@ fn generate_command() -> glint.Command(Nil) {
       }
     }
     Ok(doc) -> {
-      io.println("Building IR...")
-      let codegen_ir = ir_builder.build(doc)
-
-      let files =
-        generate_files_from_config(codegen_ir, cfg, target_val, output_dir)
-
-      case files {
-        [] -> io.println("No files generated. Check your target or config.")
-        _ -> {
-          write_generated_files(files)
+      let proceed = case capability.check(doc) {
+        Ok(_) -> True
+        Error(issues) -> {
+          io.println("")
           io.println(
-            "Generated " <> int.to_string(list.length(files)) <> " file(s)",
+            "Spec uses "
+            <> int.to_string(list.length(issues))
+            <> " unsupported capabilit"
+            <> case list.length(issues) {
+              1 -> "y:"
+              _ -> "ies:"
+            },
           )
+          list.each(issues, fn(issue) {
+            io.println(capability.issue_to_string(issue))
+          })
+          io.println("")
+          case allow_unsupported_val {
+            True -> {
+              io.println(
+                "Continuing anyway (--allow-unsupported); generated code may be incomplete.",
+              )
+              True
+            }
+            False -> {
+              io.println(
+                "Aborting. Pass --allow-unsupported to generate with degraded output.",
+              )
+              False
+            }
+          }
+        }
+      }
+
+      case proceed {
+        False -> Nil
+        True -> {
+          io.println("Building IR...")
+          let codegen_ir = ir_builder.build(doc)
+
+          let files =
+            generate_files_from_config(codegen_ir, cfg, target_val, output_dir)
+
+          case files {
+            [] -> io.println("No files generated. Check your target or config.")
+            _ -> {
+              write_generated_files(files)
+              io.println(
+                "Generated " <> int.to_string(list.length(files)) <> " file(s)",
+              )
+            }
+          }
         }
       }
     }
@@ -740,6 +788,25 @@ fn validate_command() -> glint.Command(Nil) {
           )
           list.each(errors, fn(err) {
             io.println("  - " <> validator_errors.to_string(err))
+          })
+        }
+      }
+
+      case capability.check(doc) {
+        Ok(_) -> Nil
+        Error(issues) -> {
+          io.println("")
+          io.println(
+            "Spec uses "
+            <> int.to_string(list.length(issues))
+            <> " unsupported capabilit"
+            <> case list.length(issues) {
+              1 -> "y:"
+              _ -> "ies:"
+            },
+          )
+          list.each(issues, fn(issue) {
+            io.println(capability.issue_to_string(issue))
           })
         }
       }

@@ -1,7 +1,13 @@
 //// Language-agnostic intermediate representation for code generation.
 ////
-//// Sits between the OpenAPI Document and language-specific generators.
-//// Decouples parsing from generation and makes the plugin system clean.
+//// Sits between the OpenAPI `Document` and language-specific generators.
+//// Decouples parsing from generation: third-party emitters (other languages,
+//// other frameworks) can consume `CodegenIR` without depending on the parser
+//// or knowing the OpenAPI spec details.
+////
+//// Build one with `nori.build_ir(doc)`, then walk it. The shape is intended
+//// to be stable and human-readable — semantic versioning rules of nori
+//// itself apply to this module.
 
 import gleam/option.{type Option}
 
