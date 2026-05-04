@@ -1,6 +1,35 @@
 # Changelog
 
-## Unreleased
+## v1.0.0 - 2026-05-04
+
+First Hex.pm release. The package is now positioned as a foundation for
+working with OpenAPI specifications in Gleam: parse, validate, capability
+check, and a stable `CodegenIR` contract that built-in and third-party
+generators consume.
+
+### Added
+
+- `nori/capability` module: walks a parsed `Document` and surfaces unsupported
+  features as typed `Issue` values with severity, JSON-pointer location, and
+  a human-readable reason. Initial detectors cover webhooks, callbacks,
+  discriminator on component schemas, parameter styles `deepObject` /
+  `pipeDelimited` / `spaceDelimited`, and request bodies in
+  `multipart/form-data` / `application/x-www-form-urlencoded`.
+- `nori.check_capabilities/1` and `nori.build_ir/1` are exposed as the public
+  API surface for satellite packages.
+- `nori/codegen/ir` is documented as the stable public contract that all
+  generators consume.
+- `nori generate` accepts `--allow-unsupported`; aborts by default when the
+  spec hits any blocking capability.
+- `nori validate` appends the capability report after structural validation.
+- `taffy` is now consumed as a Hex package (`>= 1.0.0 and < 2.0.0`).
+
+### Changed
+
+- Switched the Gleam version pin to `>= 1.15.0` to match what CI tests
+  against.
+- Repositioned README around the foundation framing: capability table,
+  library API example, planned satellite packages.
 
 ## v0.1.1 - 2026-05-04
 
