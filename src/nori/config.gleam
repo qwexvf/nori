@@ -4,6 +4,7 @@
 //// output directories, and target-specific options.
 
 import gleam/dict.{type Dict}
+import gleam/list
 import gleam/option
 import simplifile
 import taffy
@@ -57,7 +58,7 @@ pub fn load(path: String) -> Result(Config, ConfigError) {
 /// Returns the default configuration with all targets enabled.
 pub fn default() -> Config {
   Config(
-    spec: "./nori.yaml",
+    spec: "./openapi.yaml",
     output: OutputConfig(
       gleam: default_target("./generated", False),
       typescript: default_target("./generated", True),
@@ -87,9 +88,9 @@ fn parse_config(yaml: YamlValue) -> Config {
     Ok(v) ->
       case taffy.as_string(v) {
         option.Some(s) -> s
-        option.None -> "./nori.yaml"
+        option.None -> "./openapi.yaml"
       }
-    Error(_) -> "./nori.yaml"
+    Error(_) -> "./openapi.yaml"
   }
 
   let defaults = default()
@@ -174,7 +175,7 @@ fn parse_options(
   case taffy.as_dict(yaml) {
     option.Some(d) -> {
       dict.fold(d, defaults, fn(acc, k, v) {
-        case is_reserved(k, reserved) {
+        case list.contains(reserved, k) {
           True -> acc
           False ->
             case taffy.as_string(v) {
@@ -193,16 +194,5 @@ fn parse_options(
       })
     }
     option.None -> defaults
-  }
-}
-
-fn is_reserved(key: String, reserved: List(String)) -> Bool {
-  case reserved {
-    [] -> False
-    [first, ..rest] ->
-      case key == first {
-        True -> True
-        False -> is_reserved(key, rest)
-      }
   }
 }

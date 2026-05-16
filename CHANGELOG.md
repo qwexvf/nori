@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.1.0 - 2026-05-16
+
+### Fixed
+
+- `generate_typescript` was building a `ts_config_from_options` value and then
+  silently discarding it, so `use_interfaces`, `use_exports`, and
+  `readonly_properties` from `nori.config.yaml` never reached the generator.
+  Now threaded through to `ts_types.generate_with_config`.
+- Default for `use_interfaces` flipped from `false` to `true` to match
+  `ts_types.default_config()` and the documented example config.
+- CLI commands (`generate`, `validate`, `bundle`) now exit with a non-zero
+  status on errors (parse, validation, capability check, write failure,
+  unknown target). Previously every error path returned exit code 0.
+- `nori/yaml` no longer swallows YAML→JSON roundtrip errors with an empty
+  `YamlDecodeError([])`; it surfaces a descriptive `YamlSyntaxError`.
+- `config.load` distinguishes file-not-found (silent fallback to defaults)
+  from parse errors (reported, aborts).
+- `init` writes `openapi.yaml` (was `nori.yaml`) so the file matches the
+  README quick-start and `nori.config.example.yaml`.
+- Default config `spec` field switched to `./openapi.yaml`.
+- Replaced `let assert Ok(...) = flag(flags)` panics in the CLI with safe
+  `result.unwrap` against the flag default.
+- `templates.render` no longer panics on user-customized `.hbs` files with
+  bad handlebars syntax — surfaces `// nori: template error` in the
+  generated file instead.
+
+### Changed
+
+- `taffy` bumped to `1.1.0`.
+
+### Removed
+
+- Dropped undocumented `nori.parse` alias for `parse_json` (no callers in
+  tree).
+
 ## v1.0.0 - 2026-05-04
 
 First Hex.pm release. The package is now positioned as a foundation for

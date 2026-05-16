@@ -1,9 +1,10 @@
 //// OpenAPI library for Gleam.
 ////
-//// A comprehensive OpenAPI 3.1.x library providing:
-//// - **Parse** - OpenAPI specs (JSON) into typed Gleam data
+//// Supports OpenAPI 3.0.x and 3.1.x. Provides:
+//// - **Parse** - OpenAPI specs (YAML or JSON) into typed Gleam data
 //// - **Build** - Construct specs programmatically with a fluent builder API
 //// - **Validate** - Check specs against the OpenAPI standard
+//// - **Codegen IR** - Language-agnostic IR consumed by built-in and third-party generators
 ////
 //// ## Quick Start
 ////
@@ -77,11 +78,6 @@ pub fn parse_json(input: String) -> Result(Document, ParseError) {
       }
     }
   }
-}
-
-/// Alias for parse_json.
-pub fn parse(input: String) -> Result(Document, ParseError) {
-  parse_json(input)
 }
 
 /// Serializes an OpenAPI document to a JSON string.

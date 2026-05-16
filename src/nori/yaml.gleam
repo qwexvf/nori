@@ -29,7 +29,7 @@ pub type YamlParseError {
 ///
 /// ```gleam
 /// let yaml_str = "openapi: '3.1.0'\ninfo:\n  title: My API\n  version: '1.0.0'"
-/// let assert Ok(doc) = taffy.parse_yaml(yaml_str)
+/// let assert Ok(doc) = parse_yaml(yaml_str)
 /// ```
 pub fn parse_yaml(input: String) -> Result(Document, YamlParseError) {
   case taffy.parse(input) {
@@ -44,7 +44,10 @@ pub fn yaml_value_to_document(
 ) -> Result(Document, YamlParseError) {
   let json_str = taffy.to_json_string(value)
   case json.parse(json_str, decode.dynamic) {
-    Error(_) -> Error(YamlDecodeError([]))
+    Error(_) ->
+      Error(YamlSyntaxError(
+        "YAML→JSON conversion produced invalid JSON (taffy/nori bug)",
+      ))
     Ok(dyn) -> {
       case decoder.decode_document(dyn) {
         Ok(doc) -> Ok(doc)
@@ -92,7 +95,7 @@ pub fn load_yaml_file(path: String) -> Result(YamlValue, YamlParseError) {
 
 fn parse_json_content(content: String) -> Result(Document, YamlParseError) {
   case json.parse(content, decode.dynamic) {
-    Error(_) -> Error(YamlDecodeError([]))
+    Error(_) -> Error(YamlSyntaxError("Invalid JSON"))
     Ok(dyn) -> {
       case decoder.decode_document(dyn) {
         Ok(doc) -> Ok(doc)

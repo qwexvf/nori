@@ -22,7 +22,7 @@ pub fn load_config_test() {
 
 pub fn default_config_test() {
   let cfg = config.default()
-  should.equal(cfg.spec, "./nori.yaml")
+  should.equal(cfg.spec, "./openapi.yaml")
   should.equal(cfg.output.gleam.enabled, True)
   should.equal(cfg.output.gleam.dir, "./generated")
   should.equal(cfg.output.gleam.generated_suffix, False)
@@ -47,13 +47,16 @@ pub fn missing_fields_use_defaults_test() {
 pub fn minimal_config_test() {
   // Write a minimal config with just spec
   let assert Ok(_) =
-    simplifile.write("test/fixtures/minimal.config.yaml", "spec: ./nori.yaml\n")
+    simplifile.write(
+      "test/fixtures/minimal.config.yaml",
+      "spec: ./openapi.yaml\n",
+    )
 
   let result = config.load("test/fixtures/minimal.config.yaml")
   should.be_ok(result)
 
   let assert Ok(cfg) = result
-  should.equal(cfg.spec, "./nori.yaml")
+  should.equal(cfg.spec, "./openapi.yaml")
   // All targets should have defaults
   should.equal(cfg.output.gleam.enabled, True)
   should.equal(cfg.output.typescript.enabled, True)

@@ -30,6 +30,26 @@ import nori/validator/errors as validator_errors
 import nori/yaml
 import simplifile
 
+@external(erlang, "erlang", "halt")
+@external(javascript, "./cli_ffi.mjs", "halt")
+fn halt(code: Int) -> a
+
+fn fail(message: String) -> a {
+  io.println_error(message)
+  halt(1)
+}
+
+/// Load config: missing file falls back to defaults silently; parse errors
+/// surface as Error so the caller can fail fast.
+fn load_config(path: String) -> Result(Config, String) {
+  case config.load(path) {
+    Ok(c) -> Ok(c)
+    Error(config.ConfigFileNotFound(_)) -> Ok(config.default())
+    Error(config.ConfigParseError(msg)) ->
+      Error("Failed to parse config (" <> path <> "): " <> msg)
+  }
+}
+
 pub fn main() {
   glint.new()
   |> glint.with_name("nori/cli")
@@ -82,19 +102,17 @@ fn generate_command() -> glint.Command(Nil) {
   )
   use _named, _unnamed, flags <- glint.command()
 
-  let assert Ok(target_val) = target(flags)
-  let assert Ok(output_dir) = output(flags)
-  let assert Ok(config_file) = config_path(flags)
-  let assert Ok(spec_override) = spec_arg(flags)
-  let assert Ok(allow_unsupported_val) = allow_unsupported(flags)
+  let target_val = result.unwrap(target(flags), "")
+  let output_dir = result.unwrap(output(flags), "")
+  let config_file = result.unwrap(config_path(flags), "nori.config.yaml")
+  let spec_override = result.unwrap(spec_arg(flags), "")
+  let allow_unsupported_val = result.unwrap(allow_unsupported(flags), False)
 
-  // Load config: try file, fall back to default
-  let cfg = case config.load(config_file) {
+  let cfg = case load_config(config_file) {
     Ok(c) -> c
-    Error(_) -> config.default()
+    Error(msg) -> fail("Error: " <> msg)
   }
 
-  // Override spec from CLI flag
   let spec = case spec_override {
     "" -> cfg.spec
     s -> s
@@ -104,14 +122,12 @@ fn generate_command() -> glint.Command(Nil) {
 
   case yaml.parse_file(spec) {
     Error(err) -> {
-      io.println("Error: Failed to parse spec file")
-      case err {
-        yaml.FileError(path, msg) ->
-          io.println("  File error (" <> path <> "): " <> msg)
-        yaml.YamlSyntaxError(msg) -> io.println("  YAML syntax error: " <> msg)
-        yaml.YamlDecodeError(_) ->
-          io.println("  Failed to decode OpenAPI document")
+      let detail = case err {
+        yaml.FileError(path, msg) -> "File error (" <> path <> "): " <> msg
+        yaml.YamlSyntaxError(msg) -> "YAML syntax error: " <> msg
+        yaml.YamlDecodeError(_) -> "Failed to decode OpenAPI document"
       }
+      fail("Error: Failed to parse spec file\n  " <> detail)
     }
     Ok(doc) -> {
       let proceed = case capability.check(doc) {
@@ -149,7 +165,7 @@ fn generate_command() -> glint.Command(Nil) {
       }
 
       case proceed {
-        False -> Nil
+        False -> halt(1)
         True -> {
           io.println("Building IR...")
           let codegen_ir = ir_builder.build(doc)
@@ -158,12 +174,23 @@ fn generate_command() -> glint.Command(Nil) {
             generate_files_from_config(codegen_ir, cfg, target_val, output_dir)
 
           case files {
-            [] -> io.println("No files generated. Check your target or config.")
+            [] -> fail("No files generated. Check your target or config.")
             _ -> {
-              write_generated_files(files)
-              io.println(
-                "Generated " <> int.to_string(list.length(files)) <> " file(s)",
-              )
+              case write_generated_files(files) {
+                Ok(_) ->
+                  io.println(
+                    "Generated "
+                    <> int.to_string(list.length(files))
+                    <> " file(s)",
+                  )
+                Error(failed) ->
+                  fail(
+                    "Error: failed to write "
+                    <> int.to_string(list.length(failed))
+                    <> " file(s):\n  "
+                    <> string.join(failed, "\n  "),
+                  )
+              }
             }
           }
         }
@@ -208,10 +235,12 @@ fn generate_files_from_config(
         apply_output_override(cfg.output.fetch, output_override),
         apply_output_override(cfg.output.typescript, output_override),
       )
-    _ -> {
-      io.println("Unknown target: " <> target_override)
-      []
-    }
+    _ ->
+      fail(
+        "Unknown target: "
+        <> target_override
+        <> "\nValid targets: gleam, typescript, react-query, swr, fetch, all",
+      )
   }
 }
 
@@ -276,7 +305,7 @@ fn ts_config_from_options(tc: TargetConfig) -> ts_types.Config {
   let use_interfaces = case dict.get(tc.options, "use_interfaces") {
     Ok("true") -> True
     Ok("false") -> False
-    _ -> False
+    _ -> True
   }
   let readonly_properties = case dict.get(tc.options, "readonly_properties") {
     Ok("true") -> True
@@ -371,11 +400,11 @@ fn generate_typescript(
   codegen_ir: CodegenIR,
   tc: TargetConfig,
 ) -> List(plugin.GeneratedFile) {
-  let _ts_cfg = ts_config_from_options(tc)
+  let ts_cfg = ts_config_from_options(tc)
   [
     plugin.GeneratedFile(
       path: tc.dir <> "/" <> suffix(tc, "types", ".ts"),
-      content: ts_types.generate(codegen_ir),
+      content: ts_types.generate_with_config(codegen_ir, ts_cfg),
     ),
     plugin.GeneratedFile(
       path: tc.dir <> "/" <> suffix(tc, "client", ".ts"),
@@ -424,22 +453,31 @@ fn generate_fetch(
   generate_typescript(codegen_ir, ts_tc)
 }
 
-fn write_generated_files(files: List(plugin.GeneratedFile)) -> Nil {
-  list.each(files, fn(file) {
-    let full_path = file.path
+fn write_generated_files(
+  files: List(plugin.GeneratedFile),
+) -> Result(Nil, List(String)) {
+  let failures =
+    list.filter_map(files, fn(file) {
+      let full_path = file.path
+      let dir = get_directory(full_path)
+      let _ = simplifile.create_directory_all(dir)
 
-    // Ensure the directory exists
-    let dir = get_directory(full_path)
-    case simplifile.create_directory_all(dir) {
-      Ok(_) -> Nil
-      Error(_) -> Nil
-    }
+      case simplifile.write(full_path, file.content) {
+        Ok(_) -> {
+          io.println("  Wrote: " <> full_path)
+          Error(Nil)
+        }
+        Error(_) -> {
+          io.println_error("  Error writing: " <> full_path)
+          Ok(full_path)
+        }
+      }
+    })
 
-    case simplifile.write(full_path, file.content) {
-      Ok(_) -> io.println("  Wrote: " <> full_path)
-      Error(_) -> io.println("  Error writing: " <> full_path)
-    }
-  })
+  case failures {
+    [] -> Ok(Nil)
+    _ -> Error(failures)
+  }
 }
 
 fn get_directory(path: String) -> String {
@@ -466,18 +504,8 @@ fn init_command() -> glint.Command(Nil) {
 
   io.println("Initializing OpenAPI code generation...")
 
-  // Create nori.config.yaml
-  case simplifile.is_file("nori.config.yaml") {
-    Ok(True) -> io.println("  Exists: nori.config.yaml")
-    _ -> {
-      case simplifile.write("nori.config.yaml", init_config()) {
-        Ok(_) -> io.println("  Created: nori.config.yaml")
-        Error(_) -> io.println("  Error creating nori.config.yaml")
-      }
-    }
-  }
+  write_init_file("nori.config.yaml", init_config())
 
-  // Create templates directory with default .hbs files
   case simplifile.create_directory_all("templates") {
     Ok(_) | Error(_) -> Nil
   }
@@ -489,20 +517,11 @@ fn init_command() -> glint.Command(Nil) {
   )
   write_init_file("templates/typescript_swr.hbs", init_ts_swr_template())
 
-  // Create starter nori.yaml if none exists
-  case simplifile.is_file("nori.yaml") {
-    Ok(True) -> io.println("  Exists: nori.yaml")
-    _ -> {
-      case simplifile.write("nori.yaml", init_openapi_spec()) {
-        Ok(_) -> io.println("  Created: nori.yaml")
-        Error(_) -> io.println("  Error creating nori.yaml")
-      }
-    }
-  }
+  write_init_file("openapi.yaml", init_openapi_spec())
 
   io.println("")
   io.println("Done! Next steps:")
-  io.println("  1. Edit nori.yaml with your API spec")
+  io.println("  1. Edit openapi.yaml with your API spec")
   io.println("  2. Edit nori.config.yaml to configure output")
   io.println("  3. Run: gleam run -m nori/cli -- generate")
   io.println("")
@@ -528,7 +547,7 @@ fn init_config() -> String {
 # Docs: See nori.config.example.yaml for all options
 
 # Path to your OpenAPI spec
-spec: ./nori.yaml
+spec: ./openapi.yaml
 
 # Output configuration per target
 output:
@@ -731,23 +750,22 @@ fn bundle_command() -> glint.Command(Nil) {
   use named, _unnamed, flags <- glint.command()
 
   let spec = spec_path(named)
-  let assert Ok(output_file) = output(flags)
+  let output_file = result.unwrap(output(flags), "nori.gen.yaml")
 
   io.println("Bundling spec: " <> spec)
 
   case bundler.bundle(spec) {
     Error(err) -> {
-      io.println("Error: Failed to bundle spec")
-      case err {
-        bundler.ResolveError(_) -> io.println("  Reference resolution failed")
-        bundler.DecodeError(msg) -> io.println("  Decode error: " <> msg)
+      let detail = case err {
+        bundler.ResolveError(_) -> "Reference resolution failed"
+        bundler.DecodeError(msg) -> "Decode error: " <> msg
       }
+      fail("Error: Failed to bundle spec\n  " <> detail)
     }
     Ok(yaml_str) -> {
       case simplifile.write(output_file, yaml_str) {
         Ok(_) -> io.println("Bundled spec written to: " <> output_file)
-        Error(_) ->
-          io.println("Error: Failed to write output file: " <> output_file)
+        Error(_) -> fail("Error: Failed to write output file: " <> output_file)
       }
     }
   }
@@ -768,18 +786,19 @@ fn validate_command() -> glint.Command(Nil) {
 
   case yaml.parse_file(spec) {
     Error(err) -> {
-      io.println("Error: Failed to parse spec file")
-      case err {
-        yaml.FileError(path, msg) ->
-          io.println("  File error (" <> path <> "): " <> msg)
-        yaml.YamlSyntaxError(msg) -> io.println("  YAML syntax error: " <> msg)
-        yaml.YamlDecodeError(_) ->
-          io.println("  Failed to decode OpenAPI document")
+      let detail = case err {
+        yaml.FileError(path, msg) -> "File error (" <> path <> "): " <> msg
+        yaml.YamlSyntaxError(msg) -> "YAML syntax error: " <> msg
+        yaml.YamlDecodeError(_) -> "Failed to decode OpenAPI document"
       }
+      fail("Error: Failed to parse spec file\n  " <> detail)
     }
     Ok(doc) -> {
-      case validator.validate(doc) {
-        validator.Valid -> io.println("Spec is valid.")
+      let validate_ok = case validator.validate(doc) {
+        validator.Valid -> {
+          io.println("Spec is valid.")
+          True
+        }
         validator.Invalid(errors) -> {
           io.println(
             "Spec has "
@@ -789,11 +808,12 @@ fn validate_command() -> glint.Command(Nil) {
           list.each(errors, fn(err) {
             io.println("  - " <> validator_errors.to_string(err))
           })
+          False
         }
       }
 
-      case capability.check(doc) {
-        Ok(_) -> Nil
+      let capability_ok = case capability.check(doc) {
+        Ok(_) -> True
         Error(issues) -> {
           io.println("")
           io.println(
@@ -808,7 +828,13 @@ fn validate_command() -> glint.Command(Nil) {
           list.each(issues, fn(issue) {
             io.println(capability.issue_to_string(issue))
           })
+          False
         }
+      }
+
+      case validate_ok && capability_ok {
+        True -> Nil
+        False -> halt(1)
       }
     }
   }

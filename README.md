@@ -7,8 +7,6 @@ A foundation for working with OpenAPI specifications in Gleam. Parses OpenAPI 3.
 
 Bundled generators emit Gleam (types, routes, HTTP client, Wisp middleware) and TypeScript (types, fetch client, React Query, SWR). The codegen IR is a public contract — extension packages can plug in their own targets without forking nori.
 
-> **α release** — public APIs may shift before 1.0. Generated code compiles cleanly and is tested end-to-end against real Gleam projects.
-
 Uses [taffy](https://github.com/qwexvf/taffy) for YAML parsing.
 
 ## Capabilities
@@ -68,6 +66,7 @@ Use nori as a library to parse, inspect, or build your own codegen on top of
 the `CodegenIR` contract.
 
 ```gleam
+import gleam/int
 import gleam/io
 import gleam/list
 import nori
