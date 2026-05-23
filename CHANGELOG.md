@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1.1 - 2026-05-23
+
+### Changed
+
+- `taffy` bumped to `1.1.1`. Fixes parse failure on compact block
+  sequences (dash at the parent key's column) — OpenAPI specs like
+  OpenADR 3.1 that use `required:\n- item\nnext_key: ...` now parse
+  end to end. Also corrects `error_location` line/column reporting on
+  larger documents.
+
 ## v1.1.0 - 2026-05-16
 
 ### Fixed
