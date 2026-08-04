@@ -535,3 +535,33 @@ paths:
   ep.request_body |> should.equal(option.None)
   ep.responses |> should.equal([])
 }
+
+/// Values that sanitize to nothing, or to the same thing as another value,
+/// must not collapse onto one constructor name.
+pub fn build_enum_colliding_variant_names_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Test API
+  version: '1.0.0'
+components:
+  schemas:
+    SortDir:
+      type: string
+      enum: ['+', '-', 'asc', 'in-progress', 'in progress']"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let result = ir_builder.build(doc)
+
+  let assert Ok(ir.EnumType(variants: variants, ..)) = list.first(result.types)
+  let names = list.map(variants, fn(v) { v.name })
+
+  // all distinct, and none is the bare type name
+  list.length(list.unique(names)) |> should.equal(list.length(names))
+  list.contains(names, "SortDir") |> should.be_false
+
+  // wire values survive untouched
+  variants
+  |> list.map(fn(v) { v.value })
+  |> should.equal(["+", "-", "asc", "in-progress", "in progress"])
+}

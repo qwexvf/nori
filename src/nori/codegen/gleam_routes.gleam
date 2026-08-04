@@ -10,6 +10,7 @@ import nori/codegen/ir.{
   type CodegenIR, type Endpoint, type TypeRef, Array, Delete, Get, Head, Named,
   Nullable, Optional, Options, Patch, Post, Primitive, Put,
 }
+import nori/codegen/naming
 
 /// Generates a complete Gleam routes module string from the CodegenIR.
 ///
@@ -330,50 +331,12 @@ fn primitive_to_string(p: ir.PrimitiveType) -> String {
 // String case helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a PascalCase or camelCase string to snake_case.
-pub fn to_snake_case(name: String) -> String {
-  name
-  |> string.to_graphemes
-  |> do_snake_case([], True)
-  |> list.reverse
-  |> string.join("")
-  |> string.lowercase
-}
-
-fn do_snake_case(
-  chars: List(String),
-  acc: List(String),
-  is_start: Bool,
-) -> List(String) {
-  case chars {
-    [] -> acc
-    [c, ..rest] -> {
-      case is_upper(c), is_start {
-        True, True -> do_snake_case(rest, [string.lowercase(c), ..acc], False)
-        True, False ->
-          do_snake_case(rest, [string.lowercase(c), "_", ..acc], False)
-        False, _ -> do_snake_case(rest, [c, ..acc], False)
-      }
-    }
-  }
-}
-
-/// Convert a snake_case or camelCase string to PascalCase.
+/// Convert a name to PascalCase. See `naming.to_pascal_case`.
 pub fn to_pascal_case(name: String) -> String {
-  name
-  |> string.split("_")
-  |> list.map(capitalize)
-  |> string.join("")
+  naming.to_pascal_case(name)
 }
 
-fn capitalize(s: String) -> String {
-  case string.pop_grapheme(s) {
-    Ok(#(first, rest)) -> string.uppercase(first) <> rest
-    Error(_) -> s
-  }
-}
-
-fn is_upper(c: String) -> Bool {
-  let upper = string.uppercase(c)
-  c == upper && c != string.lowercase(c)
+/// Convert a name to snake_case. See `naming.to_snake_case`.
+pub fn to_snake_case(name: String) -> String {
+  naming.to_snake_case(name)
 }

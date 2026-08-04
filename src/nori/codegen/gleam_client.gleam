@@ -10,6 +10,7 @@ import nori/codegen/ir.{
   type CodegenIR, type Endpoint, type EndpointParam, type TypeRef, Array, Delete,
   Get, Head, Named, Nullable, Optional, Options, Patch, Post, Primitive, Put,
 }
+import nori/codegen/naming
 
 /// Generates a complete Gleam client module string from the CodegenIR.
 ///
@@ -98,20 +99,6 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
     |> list.flat_map(fn(ep) {
       list.filter(ep.parameters, fn(p) { p.location == ir.QueryParam })
     })
-  let path_or_query_present = case
-    list.any(ir.endpoints, fn(ep) {
-      list.any(ep.parameters, fn(p) {
-        p.location == ir.PathParam || p.location == ir.QueryParam
-      })
-    })
-  {
-    True -> True
-    False -> False
-  }
-  let header_present =
-    list.any(ir.endpoints, fn(ep) {
-      list.any(ep.parameters, fn(p) { p.location == ir.HeaderParam })
-    })
   // Path, query, and header values are all stringified, so any of them can
   // pull in int/float/bool.
   let stringified_params =
@@ -133,7 +120,12 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
     [] -> False
     _ -> True
   }
-  let needs_string = path_or_query_present || header_present
+  // string.replace for path substitution is the only use of gleam/string, so
+  // query- or header-only endpoints would get an unused import warning.
+  let needs_string =
+    list.any(ir.endpoints, fn(ep) {
+      list.any(ep.parameters, fn(p) { p.location == ir.PathParam })
+    })
   let needs_list = case ir.endpoints {
     [] -> False
     _ -> True
@@ -685,114 +677,7 @@ fn type_ref_decoder_call(ref: TypeRef, name_prefix: String) -> String {
   }
 }
 
-/// Convert a PascalCase, camelCase, hyphenated, or dotted string to snake_case.
-///
-/// Param names come straight from the spec, where "X-Request-Id" and "api.key"
-/// are ordinary; every non-alphanumeric character has to become an underscore
-/// or the result is not a Gleam identifier.
+/// Convert a name to snake_case. See `naming.to_snake_case`.
 pub fn to_snake_case(name: String) -> String {
-  name
-  |> string.to_graphemes
-  |> list.map(fn(c) {
-    case is_identifier_char(c) {
-      True -> c
-      False -> "_"
-    }
-  })
-  |> do_snake_case([], True)
-  |> list.reverse
-  |> string.join("")
-  |> string.lowercase
-  |> collapse_underscores
-}
-
-fn is_identifier_char(c: String) -> Bool {
-  case c {
-    "a"
-    | "b"
-    | "c"
-    | "d"
-    | "e"
-    | "f"
-    | "g"
-    | "h"
-    | "i"
-    | "j"
-    | "k"
-    | "l"
-    | "m"
-    | "n"
-    | "o"
-    | "p"
-    | "q"
-    | "r"
-    | "s"
-    | "t"
-    | "u"
-    | "v"
-    | "w"
-    | "x"
-    | "y"
-    | "z" -> True
-    "A"
-    | "B"
-    | "C"
-    | "D"
-    | "E"
-    | "F"
-    | "G"
-    | "H"
-    | "I"
-    | "J"
-    | "K"
-    | "L"
-    | "M"
-    | "N"
-    | "O"
-    | "P"
-    | "Q"
-    | "R"
-    | "S"
-    | "T"
-    | "U"
-    | "V"
-    | "W"
-    | "X"
-    | "Y"
-    | "Z" -> True
-    "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "_" -> True
-    _ -> False
-  }
-}
-
-/// "X-Status" would otherwise yield "x__status", and a trailing separator would
-/// leave a dangling underscore.
-fn collapse_underscores(s: String) -> String {
-  s
-  |> string.split("_")
-  |> list.filter(fn(part) { part != "" })
-  |> string.join("_")
-}
-
-fn do_snake_case(
-  chars: List(String),
-  acc: List(String),
-  is_start: Bool,
-) -> List(String) {
-  case chars {
-    [] -> acc
-    [c, ..rest] -> {
-      case is_upper(c), is_start {
-        True, True -> do_snake_case(rest, [string.lowercase(c), ..acc], False)
-        True, False ->
-          do_snake_case(rest, [string.lowercase(c), "_", ..acc], False)
-        False, _ -> do_snake_case(rest, [c, ..acc], False)
-      }
-    }
-  }
-}
-
-fn is_upper(c: String) -> Bool {
-  let upper = string.uppercase(c)
-  c == upper && c != string.lowercase(c)
+  naming.to_snake_case(name)
 }

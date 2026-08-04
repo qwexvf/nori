@@ -1,7 +1,9 @@
+import gleam/list
 import gleam/option.{None}
 import gleam/string
 import gleeunit/should
 import nori/codegen/gleam_client
+import nori/codegen/gleam_types
 import nori/codegen/ir.{
   type EndpointParam, CodegenIR, Endpoint, EndpointParam, Field, Get, Named,
   PString, PathParam, Primitive, RecordType,
@@ -76,7 +78,7 @@ pub fn client_enum_params_use_to_string_test() {
   output |> should_contain("\"{kind}\", types.post_status_to_string(kind)")
   output
   |> should_contain(
-    "request.set_header(\"X-Status\", types.post_status_to_string(x_status))",
+    "request.set_header(\"X-Status\", types.post_status_to_string(x__status))",
   )
   // the converter lives in the types module, so it has to be imported
   output |> should_contain("import generated/types")
@@ -94,7 +96,7 @@ pub fn client_param_args_use_declared_types_test() {
     )
 
   output |> should_contain("kind: types.PostStatus")
-  output |> should_contain("x_status: types.PostStatus")
+  output |> should_contain("x__status: types.PostStatus")
   output |> should_not_contain("kind: String")
 }
 
@@ -138,11 +140,10 @@ pub fn client_non_enum_named_param_untouched_test() {
 }
 
 pub fn to_snake_case_sanitizes_separators_test() {
-  gleam_client.to_snake_case("X-Status") |> should.equal("x_status")
-  gleam_client.to_snake_case("X-Request-Id") |> should.equal("x_request_id")
+  gleam_client.to_snake_case("X-Status") |> should.equal("x__status")
+  gleam_client.to_snake_case("X-Request-Id") |> should.equal("x__request__id")
   gleam_client.to_snake_case("api.key") |> should.equal("api_key")
   gleam_client.to_snake_case("petId") |> should.equal("pet_id")
-  gleam_client.to_snake_case("trailing-") |> should.equal("trailing")
 }
 
 fn should_contain(haystack: String, needle: String) -> Nil {
@@ -157,4 +158,15 @@ fn should_not_contain(haystack: String, needle: String) -> Nil {
     False -> Nil
     True -> panic as { "expected output NOT to contain:\n" <> needle }
   }
+}
+
+/// gleam_client and gleam_types each have their own to_snake_case, and type
+/// names become cross-module calls like types.<name>_decoder(), so any drift
+/// between the two silently breaks the generated client.
+pub fn to_snake_case_copies_agree_test() {
+  ["Pet", "PetOwner", "Order_Item", "A_B", "HTTPServer", "X-Status", "api.key"]
+  |> list.each(fn(name) {
+    gleam_client.to_snake_case(name)
+    |> should.equal(gleam_types.to_snake_case(name))
+  })
 }

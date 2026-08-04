@@ -3,6 +3,7 @@
 //// This is the bridge between the parsed OpenAPI spec and code generators.
 
 import gleam/dict
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option}
@@ -72,14 +73,9 @@ fn schema_to_typedef(name: String, s: Schema) -> ir.TypeDef {
   case s.enum_values {
     option.Some(values) -> {
       let variants =
-        list.filter_map(values, fn(json_val) {
-          // Enum values are JSON; try to extract string values
-          case json_to_string(json_val) {
-            option.Some(str) ->
-              Ok(ir.EnumVariant(name: enum_variant_name(name, str), value: str))
-            option.None -> Error(Nil)
-          }
-        })
+        values
+        |> list.filter_map(json_to_string_result)
+        |> build_enum_variants(name)
       ir.EnumType(name: name, variants: variants, description: s.description)
     }
     option.None -> {
@@ -701,6 +697,38 @@ fn build_security_requirements(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn json_to_string_result(json_val: json.Json) -> Result(String, Nil) {
+  case json_to_string(json_val) {
+    option.Some(str) -> Ok(str)
+    option.None -> Error(Nil)
+  }
+}
+
+/// Name every member, keeping the names unique.
+///
+/// Values that sanitize to nothing ("+", "-") would otherwise all collapse onto
+/// the bare type name, and two members can sanitize to the same thing anyway
+/// ("in-progress" and "in progress"), so duplicates get a positional suffix.
+fn build_enum_variants(
+  values: List(String),
+  type_name: String,
+) -> List(ir.EnumVariant) {
+  values
+  |> list.index_map(fn(value, index) { #(value, index) })
+  |> list.fold([], fn(acc, pair) {
+    let #(value, index) = pair
+    let base = enum_variant_name(type_name, value)
+    let taken = list.map(acc, fn(v: ir.EnumVariant) { v.name })
+    let name = case base != type_name && !list.contains(taken, base) {
+      True -> base
+      // index keeps it deterministic; a counter over `taken` would renumber
+      // every later member when an earlier one changes.
+      False -> base <> "Value" <> int.to_string(index)
+    }
+    list.append(acc, [ir.EnumVariant(name: name, value: value)])
+  })
+}
 
 /// Build a constructor name for an enum member.
 ///
