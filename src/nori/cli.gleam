@@ -323,11 +323,18 @@ fn generate_gleam(
   tc: TargetConfig,
 ) -> List(plugin.GeneratedFile) {
   let module_prefix = derive_module_prefix(tc.dir)
-  [
-    plugin.GeneratedFile(
-      path: tc.dir <> "/" <> suffix(tc, "types", ".gleam"),
-      content: gleam_types.generate(codegen_ir),
-    ),
+  // A spec with no schemas would otherwise get a types module holding nothing
+  // but a header comment, which the compiler warns about as an empty module.
+  let types_files = case codegen_ir.types {
+    [] -> []
+    _ -> [
+      plugin.GeneratedFile(
+        path: tc.dir <> "/" <> suffix(tc, "types", ".gleam"),
+        content: gleam_types.generate(codegen_ir),
+      ),
+    ]
+  }
+  list.append(types_files, [
     plugin.GeneratedFile(
       path: tc.dir <> "/" <> suffix(tc, "client", ".gleam"),
       content: gleam_client.generate(codegen_ir, module_prefix),
@@ -340,7 +347,7 @@ fn generate_gleam(
       path: tc.dir <> "/" <> suffix(tc, "middleware", ".gleam"),
       content: gleam_middleware.generate(codegen_ir, module_prefix),
     ),
-  ]
+  ])
 }
 
 /// Derive a Gleam module prefix from the configured output directory.

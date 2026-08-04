@@ -55,6 +55,54 @@ fn is_upper(c: String) -> Bool {
   c == upper && c != string.lowercase(c)
 }
 
+/// Turn a schema name into a Gleam type name.
+///
+/// Schema names are `[a-zA-Z0-9._-]+` in OpenAPI, but a Gleam type name is
+/// letters and digits only and must start with an uppercase letter. "Order_Item"
+/// is a legal schema name that generates `pub type Order_Item`, which does not
+/// parse.
+///
+/// Every reference to the type has to route through here too, or the definition
+/// and its uses end up with different names.
+pub fn to_type_name(name: String) -> String {
+  let pascal =
+    name
+    |> string.to_graphemes
+    |> list.map(fn(c) {
+      case is_alphanumeric(c) {
+        True -> c
+        False -> " "
+      }
+    })
+    |> string.join("")
+    |> string.split(" ")
+    |> list.filter(fn(chunk) { chunk != "" })
+    |> list.map(capitalize)
+    |> string.join("")
+
+  // A leading digit cannot start a type name; "2fa" needs a prefix, not a trim,
+  // so that "2fa" and "fa" stay distinct.
+  case starts_with_digit(pascal) {
+    True -> "Schema" <> pascal
+    False -> pascal
+  }
+}
+
+fn starts_with_digit(s: String) -> Bool {
+  case string.pop_grapheme(s) {
+    Ok(#(first, _)) ->
+      case first {
+        "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" -> True
+        _ -> False
+      }
+    Error(_) -> False
+  }
+}
+
+fn is_alphanumeric(c: String) -> Bool {
+  is_identifier_char(c) && c != "_"
+}
+
 /// Convert a snake_case or camelCase name to PascalCase.
 ///
 /// gleam_routes emits the Route variants and gleam_middleware matches on them,

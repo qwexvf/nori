@@ -10,6 +10,7 @@ import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 import nori/codegen/ir
+import nori/codegen/naming
 import nori/document.{type Document}
 import nori/operation.{type Operation, type PathItem}
 import nori/parameter.{type Parameter}
@@ -62,7 +63,7 @@ fn build_types(doc: Document) -> List(ir.TypeDef) {
       dict.to_list(components.schemas)
       |> list.map(fn(pair) {
         let #(name, schema) = pair
-        schema_to_typedef(name, schema)
+        schema_to_typedef(naming.to_type_name(name), schema)
       })
     }
   }
@@ -302,10 +303,11 @@ fn ref_schema_to_typeref(ref_schema: reference.Ref(Schema)) -> ir.TypeRef {
 }
 
 fn ref_to_typeref(ref_str: String) -> ir.TypeRef {
-  // Extract name from "#/components/schemas/Name"
+  // Extract name from "#/components/schemas/Name". The name has to go through
+  // the same sanitising as the definition or the reference will not resolve.
   case string.split(ref_str, "/") {
-    [_, _, _, name] -> ir.Named(name)
-    _ -> ir.Named(ref_str)
+    [_, _, _, name] -> ir.Named(naming.to_type_name(name))
+    _ -> ir.Named(naming.to_type_name(ref_str))
   }
 }
 

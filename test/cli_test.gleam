@@ -36,3 +36,8 @@ pub fn module_prefix_invalid_segments_test() {
   cli.derive_module_prefix("src/Generated") |> should.equal("")
   cli.derive_module_prefix("src/2gen") |> should.equal("")
 }
+
+pub fn module_prefix_dotted_dir_test() {
+  // "./src/./generated" and stray separators must not produce empty segments
+  cli.derive_module_prefix("./src/generated/") |> should.equal("generated")
+}

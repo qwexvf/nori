@@ -173,6 +173,54 @@ components:
   ir_builder.build(doc) |> should_compile
 }
 
+/// Schema names may carry separators or lead with a digit, neither of which is
+/// legal in a Gleam type name. The definition and every reference to it have to
+/// agree after sanitising.
+pub fn separator_in_schema_name_output_compiles_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Separators
+  version: '1.0.0'
+paths:
+  /orders:
+    post:
+      operationId: createOrder
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Order_Item'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/order-summary'
+components:
+  schemas:
+    Order_Item:
+      type: object
+      required: ['id']
+      properties:
+        id:
+          type: string
+        kind:
+          $ref: '#/components/schemas/2fa_mode'
+    order-summary:
+      type: object
+      properties:
+        total:
+          type: integer
+    2fa_mode:
+      type: string
+      enum: ['sms', 'totp']"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  ir_builder.build(doc) |> should_compile
+}
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
@@ -201,12 +249,23 @@ fn write_generated(codegen_ir: CodegenIR) -> Nil {
   let assert Ok(_) =
     simplifile.write(project_dir <> "/gleam.toml", scratch_gleam_toml)
 
-  [
-    #("types.gleam", gleam_types.generate(codegen_ir)),
-    #("routes.gleam", gleam_routes.generate(codegen_ir, module_prefix)),
-    #("middleware.gleam", gleam_middleware.generate(codegen_ir, module_prefix)),
-    #("client.gleam", gleam_client.generate(codegen_ir, module_prefix)),
-  ]
+  // Matches the CLI, which skips a types module it would leave empty.
+  let types_file = case codegen_ir.types {
+    [] -> []
+    _ -> [#("types.gleam", gleam_types.generate(codegen_ir))]
+  }
+
+  list.flatten([
+    types_file,
+    [
+      #("routes.gleam", gleam_routes.generate(codegen_ir, module_prefix)),
+      #(
+        "middleware.gleam",
+        gleam_middleware.generate(codegen_ir, module_prefix),
+      ),
+      #("client.gleam", gleam_client.generate(codegen_ir, module_prefix)),
+    ],
+  ])
   |> list.each(fn(pair) {
     let #(name, contents) = pair
     let assert Ok(_) = simplifile.write(gen_dir <> "/" <> name, contents)
