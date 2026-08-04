@@ -221,6 +221,46 @@ components:
   ir_builder.build(doc) |> should_compile
 }
 
+/// Header params carry their declared type, so an optional one is an Option and
+/// has to be unwrapped before set_header rather than handed over as-is.
+pub fn header_params_output_compiles_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Headers
+  version: '1.0.0'
+paths:
+  /a:
+    get:
+      operationId: getA
+      parameters:
+        - name: token
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: X-Count
+          in: header
+          required: true
+          schema:
+            type: integer
+        - name: X-Ratio
+          in: header
+          required: false
+          schema:
+            type: number
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: string"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  ir_builder.build(doc) |> should_compile
+}
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------

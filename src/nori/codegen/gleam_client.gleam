@@ -143,7 +143,12 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
   // Option appears in signatures via Nullable/Optional wraps OR optional query
   // params (where each `option.Some(v) -> ...` pattern requires the module).
   let needs_option =
-    list.any(query_params, fn(p) { !p.required })
+    list.any(ir.endpoints, fn(ep) {
+      list.any(ep.parameters, fn(p) {
+        !p.required
+        && { p.location == ir.QueryParam || p.location == ir.HeaderParam }
+      })
+    })
     || list.any(ir.endpoints, fn(ep) {
       let resp_uses =
         list.any(ep.responses, fn(r) {
@@ -591,14 +596,30 @@ fn build_header_section(
 ) -> String {
   header_params
   |> list.map(fn(p) {
-    let value =
-      param_to_string_expr(
-        to_snake_case(p.name),
-        p.type_ref,
-        name_prefix,
-        enum_names,
-      )
-    "\n  |> request.set_header(\"" <> p.name <> "\", " <> value <> ")"
+    let snake = to_snake_case(p.name)
+    case p.required {
+      True -> {
+        let value =
+          param_to_string_expr(snake, p.type_ref, name_prefix, enum_names)
+        "\n  |> request.set_header(\"" <> p.name <> "\", " <> value <> ")"
+      }
+      False -> {
+        let value =
+          param_to_string_expr("v", p.type_ref, name_prefix, enum_names)
+        "\n  |> fn(req) {\n"
+        <> "    case "
+        <> snake
+        <> " {\n"
+        <> "      option.Some(v) -> request.set_header(req, \""
+        <> p.name
+        <> "\", "
+        <> value
+        <> ")\n"
+        <> "      option.None -> req\n"
+        <> "    }\n"
+        <> "  }"
+      }
+    }
   })
   |> string.join("")
 }
