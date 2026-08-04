@@ -353,3 +353,108 @@ pub fn generate_gleam_middleware_no_prefix_test() {
   |> string.contains("// pub fn is_public_route(route: Route)")
   |> should.be_true
 }
+
+// ---------------------------------------------------------------------------
+// Enum codegen (#18, #19)
+// ---------------------------------------------------------------------------
+
+fn enum_ir(types: List(ir.TypeDef)) -> ir.CodegenIR {
+  CodegenIR(
+    title: "Enums",
+    version: "1.0.0",
+    base_url: None,
+    types: types,
+    endpoints: [],
+    security_schemes: [],
+    global_security: [],
+  )
+}
+
+fn loan_status_type() -> ir.TypeDef {
+  ir.EnumType(
+    name: "LoanStatus",
+    variants: [
+      ir.EnumVariant(name: "LoanStatusActive", value: "active"),
+      ir.EnumVariant(name: "LoanStatusPaid", value: "paid"),
+    ],
+    description: None,
+  )
+}
+
+pub fn generate_enum_type_uses_prefixed_variants_test() {
+  let output = gleam_types.generate(enum_ir([loan_status_type()]))
+
+  output |> should_contain("pub type LoanStatus {")
+  output |> should_contain("  LoanStatusActive")
+  output |> should_contain("  LoanStatusPaid")
+  // the bare wire value would not be a legal constructor
+  output |> should_not_contain("\n  active\n")
+}
+
+pub fn generate_enum_from_to_string_test() {
+  let output = gleam_types.generate(enum_ir([loan_status_type()]))
+
+  output |> should_contain("\"active\" -> gleam.Ok(LoanStatusActive)")
+  output |> should_contain("LoanStatusActive -> \"active\"")
+  output |> should_contain("_ -> gleam.Error(Nil)")
+}
+
+/// #19: decode.failure needs a value of the type, not the type name.
+pub fn generate_enum_decoder_failure_uses_variant_test() {
+  let output = gleam_types.generate(enum_ir([loan_status_type()]))
+
+  output |> should_contain("decode.failure(LoanStatusActive, \"LoanStatus\")")
+  output |> should_not_contain("decode.failure(LoanStatus,")
+}
+
+pub fn generate_enum_encoder_test() {
+  let output = gleam_types.generate(enum_ir([loan_status_type()]))
+
+  output
+  |> should_contain("pub fn encode_loan_status(value: LoanStatus) -> Json")
+  output |> should_contain("json.string(loan_status_to_string(value))")
+}
+
+/// A schema named Error shadows the prelude constructor the enum helpers need.
+pub fn generate_enum_alongside_error_schema_test() {
+  let error_type =
+    RecordType(
+      name: "Error",
+      fields: [
+        Field(
+          name: "message",
+          type_ref: Primitive(PString),
+          required: True,
+          description: None,
+          read_only: False,
+          write_only: False,
+        ),
+      ],
+      description: None,
+    )
+  let output = gleam_types.generate(enum_ir([error_type, loan_status_type()]))
+
+  output |> should_contain("import gleam\n")
+  output |> should_contain("gleam.Error(Nil)")
+}
+
+/// No enums means no prelude import, or the module warns about it being unused.
+pub fn generate_without_enum_omits_prelude_import_test() {
+  let output = gleam_types.generate(sample_ir())
+
+  output |> should_not_contain("import gleam\n")
+}
+
+fn should_contain(haystack: String, needle: String) -> Nil {
+  case string.contains(haystack, needle) {
+    True -> Nil
+    False -> panic as { "expected output to contain:\n" <> needle }
+  }
+}
+
+fn should_not_contain(haystack: String, needle: String) -> Nil {
+  case string.contains(haystack, needle) {
+    False -> Nil
+    True -> panic as { "expected output NOT to contain:\n" <> needle }
+  }
+}

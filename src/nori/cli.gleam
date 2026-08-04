@@ -345,48 +345,120 @@ fn generate_gleam(
 
 /// Derive a Gleam module prefix from the configured output directory.
 ///
-/// Looks for a `src/` segment anywhere in the path and takes everything after
-/// it (Gleam module paths are rooted at `src/`). Falls back to stripping a
-/// leading `./` if no `src/` is found.
+/// Looks for a `src` segment anywhere in the path and takes everything after
+/// it (Gleam module paths are rooted at `src/`).
 ///
 /// Examples:
 ///   "./src/generated"          -> "generated"
 ///   "src/generated"            -> "generated"
 ///   "/tmp/proj/src/api/gen"    -> "api/gen"
-///   "./generated"              -> "generated"  (no src/ — strip leading ./)
+///   "./generated"              -> "generated"  (relative, assumed src-rooted)
 ///   "src" or "./src"           -> ""           (top-level — no prefix)
+///   "/tmp/out"                 -> ""           (absolute, no src/ — unknowable)
 ///
 /// Returning "" disables real-import emission and falls back to a comment hint.
-fn derive_module_prefix(dir: String) -> String {
+/// That is always the safe answer: an unusable prefix produces a generated
+/// `import` that does not parse, which is worse than no import at all.
+pub fn derive_module_prefix(dir: String) -> String {
   let trimmed =
     dir
     |> string.trim
     |> drop_suffix("/")
 
-  // Take everything after the LAST "/src/" segment in case the project path
-  // itself contains a directory named "src".
-  let parts = string.split(trimmed, "/src/")
-  case parts {
-    [_] ->
-      case trimmed == "src" || trimmed == "./src" {
-        True -> ""
-        False ->
-          trimmed
-          |> drop_prefix("./")
-          |> drop_prefix("/")
-      }
-    _ ->
-      parts
-      |> list.last
-      |> result.unwrap("")
+  let is_absolute = string.starts_with(trimmed, "/")
+  let segments =
+    trimmed
+    |> string.split("/")
+    |> list.filter(fn(s) { s != "" && s != "." })
+
+  // After the LAST "src", in case the project path itself contains one.
+  let after_src = drop_through_last(segments, "src")
+
+  let prefix_segments = case after_src, is_absolute {
+    Ok(rest), _ -> rest
+    // No src/ anywhere: a relative path is assumed to be src-rooted already,
+    // but an absolute one gives no way to find the project root.
+    Error(_), False -> segments
+    Error(_), True -> []
+  }
+
+  case list.all(prefix_segments, is_valid_module_segment) {
+    True -> string.join(prefix_segments, "/")
+    False -> ""
   }
 }
 
-fn drop_prefix(s: String, prefix: String) -> String {
-  case string.starts_with(s, prefix) {
-    True -> string.drop_start(s, string.length(prefix))
-    False -> s
+/// Everything after the last occurrence of `needle`, or Error if absent.
+fn drop_through_last(
+  segments: List(String),
+  needle: String,
+) -> Result(List(String), Nil) {
+  list.fold(segments, Error(Nil), fn(acc, seg) {
+    case seg == needle {
+      True -> Ok([])
+      False ->
+        case acc {
+          Ok(rest) -> Ok(list.append(rest, [seg]))
+          Error(_) -> Error(Nil)
+        }
+    }
+  })
+}
+
+fn starts_with_letter(segment: String) -> Bool {
+  case string.pop_grapheme(segment) {
+    Ok(#(first, _)) -> first != string.uppercase(first)
+    Error(_) -> False
   }
+}
+
+fn is_valid_module_segment(segment: String) -> Bool {
+  segment != ""
+  && segment == string.lowercase(segment)
+  && starts_with_letter(segment)
+  && string.to_graphemes(segment)
+  |> list.all(fn(c) {
+    case c {
+      "a"
+      | "b"
+      | "c"
+      | "d"
+      | "e"
+      | "f"
+      | "g"
+      | "h"
+      | "i"
+      | "j"
+      | "k"
+      | "l"
+      | "m"
+      | "n"
+      | "o"
+      | "p"
+      | "q"
+      | "r"
+      | "s"
+      | "t"
+      | "u"
+      | "v"
+      | "w"
+      | "x"
+      | "y"
+      | "z"
+      | "0"
+      | "1"
+      | "2"
+      | "3"
+      | "4"
+      | "5"
+      | "6"
+      | "7"
+      | "8"
+      | "9"
+      | "_" -> True
+      _ -> False
+    }
+  })
 }
 
 fn drop_suffix(s: String, suffix: String) -> String {

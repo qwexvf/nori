@@ -178,3 +178,360 @@ pub fn build_petstore_show_pet_endpoint_test() {
   pet_id_param.location |> should.equal(ir.PathParam)
   pet_id_param.required |> should.be_true
 }
+
+pub fn build_enum_variant_names_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Test API
+  version: '1.0.0'
+components:
+  schemas:
+    LoanStatus:
+      type: string
+      enum: ['active', 'cancelled', 'IN_REVIEW', 'in-progress', '2fa']"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let result = ir_builder.build(doc)
+
+  let assert Ok(ir.EnumType(variants: variants, ..)) =
+    list.find(result.types, fn(t) {
+      case t {
+        ir.EnumType(name: "LoanStatus", ..) -> True
+        _ -> False
+      }
+    })
+
+  variants
+  |> list.map(fn(v) { v.name })
+  |> should.equal([
+    "LoanStatusActive", "LoanStatusCancelled", "LoanStatusInReview",
+    "LoanStatusInProgress", "LoanStatus2fa",
+  ])
+
+  // wire values stay untouched
+  variants
+  |> list.map(fn(v) { v.value })
+  |> should.equal(["active", "cancelled", "IN_REVIEW", "in-progress", "2fa"])
+}
+
+pub fn build_reffed_path_param_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Test API
+  version: '1.0.0'
+paths:
+  /reffed/{b}:
+    get:
+      operationId: getReffed
+      parameters:
+        - $ref: '#/components/parameters/B'
+      responses:
+        '200':
+          description: OK
+components:
+  parameters:
+    B:
+      name: b
+      in: path
+      required: true
+      schema:
+        type: string"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let result = ir_builder.build(doc)
+
+  let assert Ok(ep) =
+    list.find(result.endpoints, fn(e) { e.operation_id == "getReffed" })
+
+  list.length(ep.parameters) |> should.equal(1)
+  let assert Ok(param) = list.first(ep.parameters)
+  param.name |> should.equal("b")
+  param.location |> should.equal(ir.PathParam)
+  param.required |> should.be_true
+  param.type_ref |> should.equal(ir.Primitive(ir.PString))
+}
+
+pub fn build_unresolvable_param_ref_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Test API
+  version: '1.0.0'
+paths:
+  /a:
+    get:
+      operationId: getA
+      parameters:
+        - $ref: '#/components/parameters/Missing'
+      responses:
+        '200':
+          description: OK"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let result = ir_builder.build(doc)
+
+  let assert Ok(ep) =
+    list.find(result.endpoints, fn(e) { e.operation_id == "getA" })
+
+  ep.parameters |> should.equal([])
+}
+
+/// Path-item-level parameters go through the same resolution as operation-level.
+pub fn build_path_level_reffed_param_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Test API
+  version: '1.0.0'
+paths:
+  /reffed/{b}:
+    parameters:
+      - $ref: '#/components/parameters/B'
+    get:
+      operationId: getReffed
+      responses:
+        '200':
+          description: OK
+components:
+  parameters:
+    B:
+      name: b
+      in: path
+      required: true
+      schema:
+        type: string"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let result = ir_builder.build(doc)
+
+  let assert Ok(ep) =
+    list.find(result.endpoints, fn(e) { e.operation_id == "getReffed" })
+  let assert Ok(param) = list.first(ep.parameters)
+  param.name |> should.equal("b")
+  param.location |> should.equal(ir.PathParam)
+}
+
+/// A component that is itself a $ref has to be followed to the end.
+pub fn build_chained_param_ref_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Test API
+  version: '1.0.0'
+paths:
+  /a/{id}:
+    get:
+      operationId: getA
+      parameters:
+        - $ref: '#/components/parameters/Alias'
+      responses:
+        '200':
+          description: OK
+components:
+  parameters:
+    Alias:
+      $ref: '#/components/parameters/Real'
+    Real:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let result = ir_builder.build(doc)
+
+  let assert Ok(ep) =
+    list.find(result.endpoints, fn(e) { e.operation_id == "getA" })
+  let assert Ok(param) = list.first(ep.parameters)
+  param.name |> should.equal("id")
+  param.type_ref |> should.equal(ir.Primitive(ir.PInt))
+}
+
+/// A ref cycle must drop the parameter, not spin forever.
+pub fn build_cyclic_param_ref_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Test API
+  version: '1.0.0'
+paths:
+  /a:
+    get:
+      operationId: getA
+      parameters:
+        - $ref: '#/components/parameters/Loop'
+      responses:
+        '200':
+          description: OK
+components:
+  parameters:
+    Loop:
+      $ref: '#/components/parameters/Loop2'
+    Loop2:
+      $ref: '#/components/parameters/Loop'"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let result = ir_builder.build(doc)
+
+  let assert Ok(ep) =
+    list.find(result.endpoints, fn(e) { e.operation_id == "getA" })
+  ep.parameters |> should.equal([])
+}
+
+/// Resolution is location-agnostic: query and header refs resolve too.
+pub fn build_reffed_query_and_header_params_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Test API
+  version: '1.0.0'
+paths:
+  /a:
+    get:
+      operationId: getA
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/TraceId'
+      responses:
+        '200':
+          description: OK
+components:
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+    TraceId:
+      name: X-Trace-Id
+      in: header
+      required: true
+      schema:
+        type: string"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let result = ir_builder.build(doc)
+
+  let assert Ok(ep) =
+    list.find(result.endpoints, fn(e) { e.operation_id == "getA" })
+  list.length(ep.parameters) |> should.equal(2)
+
+  let assert Ok(limit) = list.find(ep.parameters, fn(p) { p.name == "limit" })
+  limit.location |> should.equal(ir.QueryParam)
+  limit.required |> should.be_false
+
+  let assert Ok(trace) =
+    list.find(ep.parameters, fn(p) { p.name == "X-Trace-Id" })
+  trace.location |> should.equal(ir.HeaderParam)
+  trace.required |> should.be_true
+}
+
+/// $ref'd request bodies were dropped the same way parameters were.
+pub fn build_reffed_request_body_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Test API
+  version: '1.0.0'
+paths:
+  /a:
+    post:
+      operationId: createA
+      requestBody:
+        $ref: '#/components/requestBodies/CreateA'
+      responses:
+        '201':
+          description: Created
+components:
+  requestBodies:
+    CreateA:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/A'
+  schemas:
+    A:
+      type: object
+      properties:
+        id:
+          type: string"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let result = ir_builder.build(doc)
+
+  let assert Ok(ep) =
+    list.find(result.endpoints, fn(e) { e.operation_id == "createA" })
+  let assert option.Some(body) = ep.request_body
+  body.content_type |> should.equal("application/json")
+  body.type_ref |> should.equal(ir.Named("A"))
+  body.required |> should.be_true
+}
+
+/// $ref'd responses were dropped too, losing the endpoint's return type.
+pub fn build_reffed_response_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Test API
+  version: '1.0.0'
+paths:
+  /a:
+    get:
+      operationId: getA
+      responses:
+        '200':
+          $ref: '#/components/responses/AOk'
+components:
+  responses:
+    AOk:
+      description: OK
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/A'
+  schemas:
+    A:
+      type: object
+      properties:
+        id:
+          type: string"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let result = ir_builder.build(doc)
+
+  let assert Ok(ep) =
+    list.find(result.endpoints, fn(e) { e.operation_id == "getA" })
+  let assert Ok(resp) = list.first(ep.responses)
+  resp.status_code |> should.equal("200")
+  resp.description |> should.equal("OK")
+  resp.type_ref |> should.equal(option.Some(ir.Named("A")))
+}
+
+pub fn build_unresolvable_body_and_response_refs_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Test API
+  version: '1.0.0'
+paths:
+  /a:
+    post:
+      operationId: createA
+      requestBody:
+        $ref: '#/components/requestBodies/Missing'
+      responses:
+        '200':
+          $ref: '#/components/responses/Missing'"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let result = ir_builder.build(doc)
+
+  let assert Ok(ep) =
+    list.find(result.endpoints, fn(e) { e.operation_id == "createA" })
+  ep.request_body |> should.equal(option.None)
+  ep.responses |> should.equal([])
+}

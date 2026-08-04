@@ -6,6 +6,7 @@ import gleam/dict
 import gleam/json
 import gleam/list
 import gleam/option.{type Option}
+import gleam/result
 import gleam/string
 import nori/codegen/ir
 import nori/document.{type Document}
@@ -74,7 +75,8 @@ fn schema_to_typedef(name: String, s: Schema) -> ir.TypeDef {
         list.filter_map(values, fn(json_val) {
           // Enum values are JSON; try to extract string values
           case json_to_string(json_val) {
-            option.Some(str) -> Ok(ir.EnumVariant(name: str, value: str))
+            option.Some(str) ->
+              Ok(ir.EnumVariant(name: enum_variant_name(name, str), value: str))
             option.None -> Error(Nil)
           }
         })
@@ -315,7 +317,30 @@ fn ref_to_typeref(ref_str: String) -> ir.TypeRef {
 // Endpoint building from paths
 // ---------------------------------------------------------------------------
 
+/// The reusable component buckets an endpoint can $ref into.
+type ComponentRefs {
+  ComponentRefs(
+    parameters: dict.Dict(String, reference.Ref(Parameter)),
+    request_bodies: dict.Dict(String, reference.Ref(RequestBody)),
+    responses: dict.Dict(String, reference.Ref(Response)),
+  )
+}
+
 fn build_endpoints(doc: Document) -> List(ir.Endpoint) {
+  let refs = case doc.components {
+    option.None ->
+      ComponentRefs(
+        parameters: dict.new(),
+        request_bodies: dict.new(),
+        responses: dict.new(),
+      )
+    option.Some(components) ->
+      ComponentRefs(
+        parameters: components.parameters,
+        request_bodies: components.request_bodies,
+        responses: components.responses,
+      )
+  }
   case doc.paths {
     option.None -> []
     option.Some(paths_dict) -> {
@@ -325,7 +350,7 @@ fn build_endpoints(doc: Document) -> List(ir.Endpoint) {
         case path_item_ref {
           reference.Reference(_) -> []
           reference.Inline(path_item) ->
-            build_endpoints_from_path_item(path, path_item)
+            build_endpoints_from_path_item(path, path_item, refs)
         }
       })
     }
@@ -335,6 +360,7 @@ fn build_endpoints(doc: Document) -> List(ir.Endpoint) {
 fn build_endpoints_from_path_item(
   path: String,
   item: PathItem,
+  refs: ComponentRefs,
 ) -> List(ir.Endpoint) {
   let path_level_params = item.parameters
   paths.get_operations(item)
@@ -342,7 +368,7 @@ fn build_endpoints_from_path_item(
     let #(method_str, op) = pair
     case parse_http_method(method_str) {
       option.Some(method) ->
-        Ok(build_endpoint(path, method, op, path_level_params))
+        Ok(build_endpoint(path, method, op, path_level_params, refs))
       option.None -> Error(Nil)
     }
   })
@@ -353,12 +379,13 @@ fn build_endpoint(
   method: ir.HttpMethod,
   op: Operation,
   path_level_params: List(reference.Ref(Parameter)),
+  refs: ComponentRefs,
 ) -> ir.Endpoint {
   let operation_id =
     option.unwrap(op.operation_id, method_to_string(method) <> "_" <> path)
-  let params = build_params(path_level_params, op.parameters)
-  let request_body = build_request_body(op.request_body)
-  let responses = build_responses(op.responses)
+  let params = build_params(path_level_params, op.parameters, refs.parameters)
+  let request_body = build_request_body(op.request_body, refs.request_bodies)
+  let responses = build_responses(op.responses, refs.responses)
   let deprecated = option.unwrap(op.deprecated, False)
   let endpoint_security = case op.security {
     option.None -> option.None
@@ -412,14 +439,60 @@ fn method_to_string(method: ir.HttpMethod) -> String {
 fn build_params(
   path_level: List(reference.Ref(Parameter)),
   op_level: List(reference.Ref(Parameter)),
+  param_components: dict.Dict(String, reference.Ref(Parameter)),
 ) -> List(ir.EndpointParam) {
   let all_params = list.append(path_level, op_level)
   list.filter_map(all_params, fn(ref_param) {
-    case ref_param {
-      reference.Reference(_) -> Error(Nil)
-      reference.Inline(param) -> Ok(build_param(param))
+    case resolve_component_ref(ref_param, param_components, "parameters") {
+      Ok(param) -> Ok(build_param(param))
+      Error(_) -> Error(Nil)
     }
   })
+}
+
+/// Max ref-to-ref hops before giving up, so a cycle cannot hang codegen.
+const max_ref_depth = 8
+
+/// Resolve `$ref: "#/components/<bucket>/Name"` against that bucket.
+///
+/// Dropping an unresolved ref silently is what made path parameters vanish from
+/// route and handler signatures, so anything resolvable must be followed here.
+fn resolve_component_ref(
+  ref_value: reference.Ref(a),
+  bucket: dict.Dict(String, reference.Ref(a)),
+  bucket_name: String,
+) -> Result(a, Nil) {
+  do_resolve_component_ref(ref_value, bucket, bucket_name, max_ref_depth)
+}
+
+fn do_resolve_component_ref(
+  ref_value: reference.Ref(a),
+  bucket: dict.Dict(String, reference.Ref(a)),
+  bucket_name: String,
+  depth: Int,
+) -> Result(a, Nil) {
+  case ref_value {
+    reference.Inline(value) -> Ok(value)
+    reference.Reference(ref_str) ->
+      case depth <= 0 {
+        True -> Error(Nil)
+        False -> {
+          use name <- result.try(component_ref_name(ref_str, bucket_name))
+          use target <- result.try(dict.get(bucket, name))
+          do_resolve_component_ref(target, bucket, bucket_name, depth - 1)
+        }
+      }
+  }
+}
+
+fn component_ref_name(
+  ref_str: String,
+  bucket_name: String,
+) -> Result(String, Nil) {
+  case string.split(ref_str, "/") {
+    ["#", "components", bucket, name] if bucket == bucket_name -> Ok(name)
+    _ -> Error(Nil)
+  }
 }
 
 fn build_param(param: Parameter) -> ir.EndpointParam {
@@ -454,46 +527,50 @@ fn param_location_to_ir(loc: parameter.ParameterLocation) -> ir.ParamLocation {
 
 fn build_request_body(
   body: Option(reference.Ref(RequestBody)),
+  body_components: dict.Dict(String, reference.Ref(RequestBody)),
 ) -> Option(ir.RequestBodyIR) {
   case body {
     option.None -> option.None
-    option.Some(reference.Reference(_)) -> option.None
-    option.Some(reference.Inline(rb)) -> {
-      // Prefer application/json
-      let content_type = "application/json"
-      case dict.get(rb.content, content_type) {
-        Ok(media_type) -> {
-          let type_ref = case media_type.schema {
-            option.Some(ref_schema) -> ref_schema_to_typeref(ref_schema)
-            option.None -> ir.Unknown
-          }
-          let required = option.unwrap(rb.required, False)
-          option.Some(ir.RequestBodyIR(
-            content_type: content_type,
-            type_ref: type_ref,
-            required: required,
-          ))
-        }
-        Error(_) -> {
-          // Take the first content type available
-          case dict.to_list(rb.content) {
-            [#(ct, media_type), ..] -> {
+    option.Some(ref_body) ->
+      case resolve_component_ref(ref_body, body_components, "requestBodies") {
+        Error(_) -> option.None
+        Ok(rb) -> {
+          // Prefer application/json
+          let content_type = "application/json"
+          case dict.get(rb.content, content_type) {
+            Ok(media_type) -> {
               let type_ref = case media_type.schema {
                 option.Some(ref_schema) -> ref_schema_to_typeref(ref_schema)
                 option.None -> ir.Unknown
               }
               let required = option.unwrap(rb.required, False)
               option.Some(ir.RequestBodyIR(
-                content_type: ct,
+                content_type: content_type,
                 type_ref: type_ref,
                 required: required,
               ))
             }
-            [] -> option.None
+            Error(_) -> {
+              // Take the first content type available
+              case dict.to_list(rb.content) {
+                [#(ct, media_type), ..] -> {
+                  let type_ref = case media_type.schema {
+                    option.Some(ref_schema) -> ref_schema_to_typeref(ref_schema)
+                    option.None -> ir.Unknown
+                  }
+                  let required = option.unwrap(rb.required, False)
+                  option.Some(ir.RequestBodyIR(
+                    content_type: ct,
+                    type_ref: type_ref,
+                    required: required,
+                  ))
+                }
+                [] -> option.None
+              }
+            }
           }
         }
       }
-    }
   }
 }
 
@@ -503,13 +580,14 @@ fn build_request_body(
 
 fn build_responses(
   responses: dict.Dict(String, reference.Ref(Response)),
+  response_components: dict.Dict(String, reference.Ref(Response)),
 ) -> List(ir.ResponseIR) {
   dict.to_list(responses)
   |> list.filter_map(fn(pair) {
     let #(status_code, ref_response) = pair
-    case ref_response {
-      reference.Reference(_) -> Error(Nil)
-      reference.Inline(resp) -> Ok(build_response(status_code, resp))
+    case resolve_component_ref(ref_response, response_components, "responses") {
+      Error(_) -> Error(Nil)
+      Ok(resp) -> Ok(build_response(status_code, resp))
     }
   })
 }
@@ -623,6 +701,104 @@ fn build_security_requirements(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Build a constructor name for an enum member.
+///
+/// The raw value cannot be used as-is: `active` is not a valid Gleam
+/// constructor, `in-progress` is not an identifier at all, and two enums in the
+/// same spec routinely share member names. Prefixing with the type name gives
+/// valid, collision-free constructors, and also covers values that start with a
+/// digit.
+fn enum_variant_name(type_name: String, value: String) -> String {
+  type_name <> pascal_case_value(value)
+}
+
+fn pascal_case_value(value: String) -> String {
+  value
+  |> string.to_graphemes
+  |> list.map(fn(c) {
+    case is_alphanumeric(c) {
+      True -> c
+      False -> " "
+    }
+  })
+  |> string.join("")
+  |> string.split(" ")
+  |> list.filter(fn(chunk) { chunk != "" })
+  |> list.map(capitalize_chunk)
+  |> string.join("")
+}
+
+fn capitalize_chunk(chunk: String) -> String {
+  // SCREAMING_CASE members read better as ScreamingCase than SCREAMINGCASE
+  let body = case chunk == string.uppercase(chunk) {
+    True -> string.lowercase(chunk)
+    False -> chunk
+  }
+  case string.pop_grapheme(body) {
+    Ok(#(first, rest)) -> string.uppercase(first) <> rest
+    Error(_) -> body
+  }
+}
+
+fn is_alphanumeric(c: String) -> Bool {
+  case c {
+    "a"
+    | "b"
+    | "c"
+    | "d"
+    | "e"
+    | "f"
+    | "g"
+    | "h"
+    | "i"
+    | "j"
+    | "k"
+    | "l"
+    | "m"
+    | "n"
+    | "o"
+    | "p"
+    | "q"
+    | "r"
+    | "s"
+    | "t"
+    | "u"
+    | "v"
+    | "w"
+    | "x"
+    | "y"
+    | "z" -> True
+    "A"
+    | "B"
+    | "C"
+    | "D"
+    | "E"
+    | "F"
+    | "G"
+    | "H"
+    | "I"
+    | "J"
+    | "K"
+    | "L"
+    | "M"
+    | "N"
+    | "O"
+    | "P"
+    | "Q"
+    | "R"
+    | "S"
+    | "T"
+    | "U"
+    | "V"
+    | "W"
+    | "X"
+    | "Y"
+    | "Z" -> True
+    "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" -> True
+    _ -> False
+  }
+}
 
 /// Attempt to extract a string from a gleam/json Json value.
 /// Json values from enum_values are opaque; we convert via string representation.

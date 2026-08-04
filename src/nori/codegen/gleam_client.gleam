@@ -25,9 +25,12 @@ pub fn generate(ir: CodegenIR, module_prefix: String) -> String {
     "" -> ""
     _ -> "types."
   }
+  // Enum-typed params are converted with the generated <type>_to_string; other
+  // named types have no such helper, so they must not be routed through one.
+  let enum_names = enum_type_names(ir)
   let endpoint_fns =
     ir.endpoints
-    |> list.map(fn(ep) { generate_endpoint(ep, name_prefix) })
+    |> list.map(fn(ep) { generate_endpoint(ep, name_prefix, enum_names) })
     |> string.join("\n\n")
 
   string.join(
@@ -59,7 +62,11 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
             None -> []
           }
         })
-      list.append(body_types, response_types)
+      // Params count too: an enum-typed one calls types.<name>_to_string.
+      let param_types =
+        ep.parameters
+        |> list.flat_map(fn(p) { collect_named_types(p.type_ref) })
+      list.flatten([body_types, response_types, param_types])
     })
     |> list.unique
 
@@ -105,12 +112,23 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
     list.any(ir.endpoints, fn(ep) {
       list.any(ep.parameters, fn(p) { p.location == ir.HeaderParam })
     })
+  // Path, query, and header values are all stringified, so any of them can
+  // pull in int/float/bool.
+  let stringified_params =
+    ir.endpoints
+    |> list.flat_map(fn(ep) {
+      list.filter(ep.parameters, fn(p) {
+        p.location == ir.PathParam
+        || p.location == ir.QueryParam
+        || p.location == ir.HeaderParam
+      })
+    })
   let needs_int =
-    list.any(query_params, fn(p) { p.type_ref == Primitive(ir.PInt) })
+    list.any(stringified_params, fn(p) { p.type_ref == Primitive(ir.PInt) })
   let needs_float =
-    list.any(query_params, fn(p) { p.type_ref == Primitive(ir.PFloat) })
+    list.any(stringified_params, fn(p) { p.type_ref == Primitive(ir.PFloat) })
   let needs_bool =
-    list.any(query_params, fn(p) { p.type_ref == Primitive(ir.PBool) })
+    list.any(stringified_params, fn(p) { p.type_ref == Primitive(ir.PBool) })
   let needs_uri = case query_params {
     [] -> False
     _ -> True
@@ -273,13 +291,30 @@ fn generate_error_type() -> String {
 // Per-endpoint generation
 // ---------------------------------------------------------------------------
 
-fn generate_endpoint(endpoint: Endpoint, name_prefix: String) -> String {
-  let request_fn = generate_request_fn(endpoint, name_prefix)
+fn enum_type_names(ir: CodegenIR) -> List(String) {
+  list.filter_map(ir.types, fn(td) {
+    case td {
+      ir.EnumType(name, [_, ..], _) -> Ok(name)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn generate_endpoint(
+  endpoint: Endpoint,
+  name_prefix: String,
+  enum_names: List(String),
+) -> String {
+  let request_fn = generate_request_fn(endpoint, name_prefix, enum_names)
   let response_fn = generate_response_fn(endpoint, name_prefix)
   request_fn <> "\n\n" <> response_fn
 }
 
-fn generate_request_fn(endpoint: Endpoint, name_prefix: String) -> String {
+fn generate_request_fn(
+  endpoint: Endpoint,
+  name_prefix: String,
+  enum_names: List(String),
+) -> String {
   let fn_name = to_snake_case(endpoint.operation_id) <> "_request"
   let method_str = method_to_string(endpoint.method)
 
@@ -305,10 +340,11 @@ fn generate_request_fn(endpoint: Endpoint, name_prefix: String) -> String {
   let all_args = "config: ClientConfig" <> param_args
 
   // Build path with substitution
-  let path_expr = build_path_expr(endpoint.path, path_params)
+  let path_expr =
+    build_path_expr(endpoint.path, path_params, name_prefix, enum_names)
 
   // Build query string
-  let query_section = build_query_section(query_params)
+  let query_section = build_query_section(query_params, name_prefix, enum_names)
   let query_apply = case query_params {
     [] -> ""
     _ ->
@@ -326,7 +362,8 @@ fn generate_request_fn(endpoint: Endpoint, name_prefix: String) -> String {
   }
 
   // Build header params
-  let header_section = build_header_section(header_params)
+  let header_section =
+    build_header_section(header_params, name_prefix, enum_names)
 
   let doc = case endpoint.summary {
     Some(s) -> "/// " <> s <> "\n"
@@ -425,9 +462,15 @@ fn build_param_args(
   body: option.Option(ir.RequestBodyIR),
   name_prefix: String,
 ) -> String {
+  // Path params are always required, so no Option wrap.
   let path_args =
     path_params
-    |> list.map(fn(p) { ", " <> to_snake_case(p.name) <> ": String" })
+    |> list.map(fn(p) {
+      ", "
+      <> to_snake_case(p.name)
+      <> ": "
+      <> type_ref_to_string(p.type_ref, name_prefix)
+    })
   let query_args =
     query_params
     |> list.map(fn(p) {
@@ -439,7 +482,13 @@ fn build_param_args(
     })
   let header_args =
     header_params
-    |> list.map(fn(p) { ", " <> to_snake_case(p.name) <> ": String" })
+    |> list.map(fn(p) {
+      let type_str = case p.required {
+        True -> type_ref_to_string(p.type_ref, name_prefix)
+        False -> "Option(" <> type_ref_to_string(p.type_ref, name_prefix) <> ")"
+      }
+      ", " <> to_snake_case(p.name) <> ": " <> type_str
+    })
   let body_arg = case body {
     Some(b) -> [", body: " <> type_ref_to_string(b.type_ref, name_prefix)]
     None -> []
@@ -448,26 +497,39 @@ fn build_param_args(
   |> string.join("")
 }
 
-fn build_path_expr(path: String, path_params: List(EndpointParam)) -> String {
+fn build_path_expr(
+  path: String,
+  path_params: List(EndpointParam),
+  name_prefix: String,
+  enum_names: List(String),
+) -> String {
   case path_params {
     [] -> "\"" <> path <> "\""
-    _ -> {
-      let result =
-        list.fold(path_params, "\"" <> path <> "\"", fn(expr, p) {
-          "string.replace("
-          <> expr
-          <> ", \"{"
-          <> p.name
-          <> "}\", "
-          <> to_snake_case(p.name)
-          <> ")"
-        })
-      result
-    }
+    _ ->
+      list.fold(path_params, "\"" <> path <> "\"", fn(expr, p) {
+        let value =
+          param_to_string_expr(
+            to_snake_case(p.name),
+            p.type_ref,
+            name_prefix,
+            enum_names,
+          )
+        "string.replace("
+        <> expr
+        <> ", \"{"
+        <> p.name
+        <> "}\", "
+        <> value
+        <> ")"
+      })
   }
 }
 
-fn build_query_section(query_params: List(EndpointParam)) -> String {
+fn build_query_section(
+  query_params: List(EndpointParam),
+  name_prefix: String,
+  enum_names: List(String),
+) -> String {
   case query_params {
     [] -> ""
     params -> {
@@ -477,7 +539,8 @@ fn build_query_section(query_params: List(EndpointParam)) -> String {
           let snake = to_snake_case(p.name)
           case p.required {
             True -> {
-              let value_expr = query_param_to_string_expr(snake, p.type_ref)
+              let value_expr =
+                param_to_string_expr(snake, p.type_ref, name_prefix, enum_names)
               "  let query = list.append(query, [#(\""
               <> p.name
               <> "\", "
@@ -485,7 +548,8 @@ fn build_query_section(query_params: List(EndpointParam)) -> String {
               <> ")])\n"
             }
             False -> {
-              let value_expr = query_param_to_string_expr("v", p.type_ref)
+              let value_expr =
+                param_to_string_expr("v", p.type_ref, name_prefix, enum_names)
               "  let query = case "
               <> snake
               <> " {\n"
@@ -505,21 +569,44 @@ fn build_query_section(query_params: List(EndpointParam)) -> String {
   }
 }
 
-fn query_param_to_string_expr(var_name: String, ref: TypeRef) -> String {
+/// Render a param value as a String expression. Path, query, and header values
+/// are all interpolated into strings, so all three need this.
+fn param_to_string_expr(
+  var_name: String,
+  ref: TypeRef,
+  name_prefix: String,
+  enum_names: List(String),
+) -> String {
   case ref {
     Primitive(ir.PString) -> var_name
     Primitive(ir.PInt) -> "int.to_string(" <> var_name <> ")"
     Primitive(ir.PFloat) -> "float.to_string(" <> var_name <> ")"
     Primitive(ir.PBool) -> "bool.to_string(" <> var_name <> ")"
+    Named(name) ->
+      case list.contains(enum_names, name) {
+        True ->
+          name_prefix <> to_snake_case(name) <> "_to_string(" <> var_name <> ")"
+        False -> var_name
+      }
     _ -> var_name
   }
 }
 
-fn build_header_section(header_params: List(EndpointParam)) -> String {
+fn build_header_section(
+  header_params: List(EndpointParam),
+  name_prefix: String,
+  enum_names: List(String),
+) -> String {
   header_params
   |> list.map(fn(p) {
-    let snake = to_snake_case(p.name)
-    "\n  |> request.set_header(\"" <> p.name <> "\", " <> snake <> ")"
+    let value =
+      param_to_string_expr(
+        to_snake_case(p.name),
+        p.type_ref,
+        name_prefix,
+        enum_names,
+      )
+    "\n  |> request.set_header(\"" <> p.name <> "\", " <> value <> ")"
   })
   |> string.join("")
 }
@@ -598,14 +685,93 @@ fn type_ref_decoder_call(ref: TypeRef, name_prefix: String) -> String {
   }
 }
 
-/// Convert a PascalCase or camelCase string to snake_case.
+/// Convert a PascalCase, camelCase, hyphenated, or dotted string to snake_case.
+///
+/// Param names come straight from the spec, where "X-Request-Id" and "api.key"
+/// are ordinary; every non-alphanumeric character has to become an underscore
+/// or the result is not a Gleam identifier.
 pub fn to_snake_case(name: String) -> String {
   name
   |> string.to_graphemes
+  |> list.map(fn(c) {
+    case is_identifier_char(c) {
+      True -> c
+      False -> "_"
+    }
+  })
   |> do_snake_case([], True)
   |> list.reverse
   |> string.join("")
   |> string.lowercase
+  |> collapse_underscores
+}
+
+fn is_identifier_char(c: String) -> Bool {
+  case c {
+    "a"
+    | "b"
+    | "c"
+    | "d"
+    | "e"
+    | "f"
+    | "g"
+    | "h"
+    | "i"
+    | "j"
+    | "k"
+    | "l"
+    | "m"
+    | "n"
+    | "o"
+    | "p"
+    | "q"
+    | "r"
+    | "s"
+    | "t"
+    | "u"
+    | "v"
+    | "w"
+    | "x"
+    | "y"
+    | "z" -> True
+    "A"
+    | "B"
+    | "C"
+    | "D"
+    | "E"
+    | "F"
+    | "G"
+    | "H"
+    | "I"
+    | "J"
+    | "K"
+    | "L"
+    | "M"
+    | "N"
+    | "O"
+    | "P"
+    | "Q"
+    | "R"
+    | "S"
+    | "T"
+    | "U"
+    | "V"
+    | "W"
+    | "X"
+    | "Y"
+    | "Z" -> True
+    "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "_" -> True
+    _ -> False
+  }
+}
+
+/// "X-Status" would otherwise yield "x__status", and a trailing separator would
+/// leave a dangling underscore.
+fn collapse_underscores(s: String) -> String {
+  s
+  |> string.split("_")
+  |> list.filter(fn(part) { part != "" })
+  |> string.join("_")
 }
 
 fn do_snake_case(
