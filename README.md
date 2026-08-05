@@ -43,29 +43,48 @@ All commands exit non-zero on error, so they slot into CI.
 
 ## Config
 
+Only the Gleam target runs by default. A TypeScript target runs when the config
+names it — writing a block for one is the request, and `enabled: false` turns it
+back off.
+
 ```yaml
 # nori.config.yaml
 spec: ./openapi.yaml
 
 output:
   gleam:
-    enabled: true
     dir: ./src/generated
     generated_suffix: false       # types.gleam (not types.generated.gleam)
 
-  typescript:
-    enabled: true
+  typescript:                     # listed, so it runs
     dir: ./src/api
     generated_suffix: true        # types.generated.ts
     use_interfaces: true
     use_exports: true
 
   react_query:
-    enabled: true
     dir: ./src/api
 
   swr:
-    enabled: false
+    enabled: false                # explicitly off (it is off by default anyway)
+```
+
+### Splitting the Gleam output across projects
+
+The four generated Gleam modules do not all belong to the same place: `types` is
+shared, `routes` and `middleware` are the backend's, `client` is the frontend's.
+`dirs` overrides the directory per file, and `types_module` is the module path
+the others import `types` by when it lands in another project.
+
+```yaml
+output:
+  gleam:
+    dir: ./shared/src/generated          # default for anything not listed
+    dirs:
+      routes: ./backend/src/generated
+      middleware: ./backend/src/generated
+      client: ./frontend/src/generated
+    types_module: shared/generated       # what routes/client import types by
 ```
 
 See `nori.config.example.yaml` for every option.
@@ -75,9 +94,25 @@ See `nori.config.example.yaml` for every option.
 **Gleam** (server-side):
 
 - `types.gleam` — record types, `gleam/dynamic/decode` decoders, JSON encoders
-- `routes.gleam` — `Route` union + `match_route(method, segments)`
+- `routes.gleam` — `Route` union, `match_route(method, segments)`, and a typed
+  query-parameter reader per endpoint that declares them
 - `client.gleam` — typed request builders
 - `middleware.gleam` — auth extractors, CORS, content-type validation
+
+Query parameters are typed in both directions. For
+`GET /issues?status=&limit=`:
+
+```gleam
+case routes.list_issues_query(wisp.get_query(req)) {
+  Ok(q) -> // q.status is Option(IssueStatus), q.limit is Option(Int)
+  Error(routes.MissingQueryParam(name)) -> // a client omitted something
+  Error(routes.InvalidQueryParam(name, expected)) -> // ...or sent nonsense
+}
+```
+
+A repeated key (`?tag=a&tag=b`) reads as a `List`, following OpenAPI's default
+`style: form, explode: true`. A comma-joined value is never split: `?q=a,b` is
+one value containing a comma.
 
 **TypeScript** (client-side):
 

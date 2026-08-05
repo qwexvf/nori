@@ -15,11 +15,12 @@ import nori/codegen/naming
 
 /// Generates a complete Gleam middleware module string from the CodegenIR.
 ///
-/// `module_prefix` is the Gleam module path of the generated output directory
-/// (e.g. `"generated"` for `./src/generated`). When non-empty the middleware
-/// imports the consumer's routes module so `is_public_route` can match on
-/// `Route` variants directly. When empty the function is emitted commented
-/// out with a hint, matching the pre-prefix behavior.
+/// `module_prefix` is the Gleam module path of the **routes** module — this
+/// generator imports routes, not types, so a config that sends the two to
+/// different directories must pass the routes one here. When non-empty the
+/// middleware imports it so `is_public_route` can match on `Route` variants
+/// directly. When empty the function is emitted commented out with a hint,
+/// matching the pre-prefix behavior.
 pub fn generate(ir: CodegenIR, module_prefix: String) -> String {
   let header = generate_header(ir, module_prefix)
   let types = generate_types(ir.security_schemes)

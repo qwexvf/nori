@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.4.0 - 2026-08-06
+
+### Added
+
+- **Server-side query parameter readers.** `routes.gleam` now emits a record and
+  a reader per endpoint that declares query parameters, so the types the spec
+  already states survive to the server instead of being re-derived by hand from
+  a `List(#(String, String))`. Required parameters are bare, optional ones are
+  `Option`, a repeated key is a `List`, and an enum-typed parameter goes through
+  the generated `<enum>_from_string` so the accepted spellings come from the
+  spec. `MissingQueryParam` and `InvalidQueryParam` are separate cases: one is a
+  client that omitted something, the other a client that sent nonsense. (#8)
+- **Per-file output directories for the Gleam target.** `dirs` overrides the
+  directory per generated file and `types_module` sets the module path the other
+  files import `types` by, for the common backend / frontend / shared split
+  where the four modules do not belong to one project. (#20)
+
+### Changed
+
+- **Only the Gleam target is enabled by default.** nori is a Gleam tool that can
+  also emit TypeScript, and a config that never mentioned `typescript` used to
+  get TypeScript anyway, written to `./generated` relative to the cwd. Naming a
+  target in the config is now what turns it on; a block without `enabled` counts
+  as naming it, and `enabled: false` still wins. Configs that relied on the old
+  default need the targets they want listed. (#31, and the substance of #21)
+
+### Fixed
+
+- Array-typed query parameters made the generated client fail to compile: the
+  whole list was passed where a `String` was expected. Each element now appends
+  its own pair, which is also what `style: form, explode: true` specifies.
+- `types.gleam` imported `gleam/option` unconditionally, so a spec of enums and
+  required fields produced an unused-import warning in a file the consumer is
+  told not to edit. The query readers apply the same rule: only the helpers the
+  generated code reaches are emitted.
+
 ## v1.3.3 - 2026-08-05
 
 ### Fixed

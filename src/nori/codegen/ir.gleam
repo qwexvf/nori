@@ -9,7 +9,7 @@
 //// to be stable and human-readable — semantic versioning rules of nori
 //// itself apply to this module.
 
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 
 /// The complete codegen IR — everything a generator needs to produce code.
 pub type CodegenIR {
@@ -182,4 +182,27 @@ pub type ResponseIR {
     content_type: Option(String),
     type_ref: Option(TypeRef),
   )
+}
+
+/// Drops `Nullable` / `Optional` wrappers, leaving the type underneath.
+///
+/// Every generator needs this to decide how a value is rendered, and three of
+/// them had grown their own copy under three names. Type names become
+/// cross-module calls, so the copies drifting is the same class of bug that
+/// moved the case helpers into `naming`.
+pub fn strip_optional(ref: TypeRef) -> TypeRef {
+  case ref {
+    Nullable(inner) | Optional(inner) -> strip_optional(inner)
+    other -> other
+  }
+}
+
+/// The primitive a value ultimately renders from, looking through optional and
+/// array wrappers. `None` for named, dict, or unknown types.
+pub fn base_primitive(ref: TypeRef) -> Option(PrimitiveType) {
+  case strip_optional(ref) {
+    Array(item) -> base_primitive(item)
+    Primitive(prim) -> Some(prim)
+    _ -> None
+  }
 }

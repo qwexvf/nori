@@ -7,8 +7,8 @@ import nori/codegen/gleam_middleware
 import nori/codegen/gleam_routes
 import nori/codegen/gleam_types
 import nori/codegen/ir.{
-  CodegenIR, Endpoint, EndpointParam, Field, Get, Named, PString, PathParam,
-  Post, Primitive, RecordType, ResponseIR,
+  type CodegenIR, CodegenIR, Endpoint, EndpointParam, EnumVariant, Field, Get,
+  Named, PString, PathParam, Post, Primitive, RecordType, ResponseIR,
 }
 import nori/codegen/ir_builder
 import nori/yaml
@@ -502,4 +502,212 @@ components:
   output
   |> string.contains("_ -> False")
   |> should.be_true
+}
+
+pub fn query_readers_type_each_param_shape_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Q
+  version: '1.0.0'
+paths:
+  /posts:
+    get:
+      operationId: listPosts
+      parameters:
+        - name: author
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: tag
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        '204':
+          description: OK"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = gleam_routes.generate(ir_builder.build(doc), "app/generated")
+
+  // Required stays bare, optional is an Option, a repeated key is a List that
+  // is already empty when absent.
+  output |> string.contains("author: String") |> should.be_true
+  output |> string.contains("page: Option(Int)") |> should.be_true
+  output |> string.contains("tag: List(String)") |> should.be_true
+
+  output
+  |> string.contains("query_required(params, \"author\", parse_string_param)")
+  |> should.be_true
+  output
+  |> string.contains("query_optional(params, \"page\", parse_int_param)")
+  |> should.be_true
+  output
+  |> string.contains("query_list(params, \"tag\", parse_string_param)")
+  |> should.be_true
+
+  // Nothing numeric-but-float here, so that helper must not be emitted.
+  output |> string.contains("parse_float_param") |> should.be_false
+  output |> string.contains("parse_bool_param") |> should.be_false
+}
+
+pub fn query_readers_use_the_enum_from_string_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Q
+  version: '1.0.0'
+paths:
+  /posts:
+    get:
+      operationId: listPosts
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/PostStatus'
+      responses:
+        '204':
+          description: OK
+components:
+  schemas:
+    PostStatus:
+      type: string
+      enum: [draft, published]"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = gleam_routes.generate(ir_builder.build(doc), "app/generated")
+
+  // The accepted spellings come from the generated from_string, not a second
+  // list here that could drift from the spec.
+  output |> string.contains("status: Option(PostStatus)") |> should.be_true
+  output
+  |> string.contains("types.post_status_from_string(raw)")
+  |> should.be_true
+  // ...and the type has to be imported, or the record does not compile.
+  output |> string.contains("type PostStatus") |> should.be_true
+}
+
+pub fn query_readers_keep_record_typed_params_as_strings_test() {
+  // ⚠️ A record has no from_string, so naming its type would emit a call that
+  // was never generated. Adjacent to the same gap in the client generator.
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Q
+  version: '1.0.0'
+paths:
+  /posts:
+    get:
+      operationId: listPosts
+      parameters:
+        - name: filter
+          in: query
+          schema:
+            $ref: '#/components/schemas/Filter'
+      responses:
+        '204':
+          description: OK
+components:
+  schemas:
+    Filter:
+      type: object
+      properties:
+        name:
+          type: string"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = gleam_routes.generate(ir_builder.build(doc), "app/generated")
+
+  output |> string.contains("filter: Option(String)") |> should.be_true
+  output |> string.contains("filter_from_string") |> should.be_false
+}
+
+pub fn types_module_imports_option_only_when_used_test() {
+  let with_optional =
+    CodegenIR(..empty_ir(), types: [
+      RecordType(
+        name: "Pet",
+        fields: [
+          Field(
+            name: "tag",
+            type_ref: Primitive(ir.PString),
+            required: False,
+            description: None,
+            read_only: False,
+            write_only: False,
+          ),
+        ],
+        description: None,
+      ),
+    ])
+
+  gleam_types.generate(with_optional)
+  |> string.contains("import gleam/option")
+  |> should.be_true
+
+  // An enum plus required fields never mentions Option, and an unused import is
+  // a warning in a file the consumer is told not to edit.
+  let all_required =
+    CodegenIR(..empty_ir(), types: [
+      RecordType(
+        name: "Pet",
+        fields: [
+          Field(
+            name: "id",
+            type_ref: Primitive(ir.PInt),
+            required: True,
+            description: None,
+            read_only: False,
+            write_only: False,
+          ),
+        ],
+        description: None,
+      ),
+      ir.EnumType(
+        name: "Status",
+        variants: [EnumVariant(name: "Active", value: "active")],
+        description: None,
+      ),
+    ])
+
+  gleam_types.generate(all_required)
+  |> string.contains("import gleam/option")
+  |> should.be_false
+}
+
+pub fn types_module_imports_option_for_a_nullable_alias_test() {
+  // Nullable inside an alias or a list counts too — the wrapper is what renders
+  // as Option, wherever it sits.
+  let nullable_alias =
+    CodegenIR(..empty_ir(), types: [
+      ir.AliasType(
+        name: "MaybeName",
+        target: ir.Nullable(Primitive(ir.PString)),
+        description: None,
+      ),
+    ])
+
+  gleam_types.generate(nullable_alias)
+  |> string.contains("import gleam/option")
+  |> should.be_true
+}
+
+fn empty_ir() -> CodegenIR {
+  CodegenIR(
+    title: "T",
+    version: "1.0.0",
+    base_url: None,
+    types: [],
+    endpoints: [],
+    security_schemes: [],
+    global_security: [],
+  )
 }

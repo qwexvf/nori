@@ -16,6 +16,7 @@
 
 import gleam/list
 import gleam/string
+import gleeunit/should
 import nori/codegen/gleam_client
 import nori/codegen/gleam_middleware
 import nori/codegen/gleam_routes
@@ -354,4 +355,305 @@ fn write_generated(codegen_ir: CodegenIR) -> Nil {
     let #(name, contents) = pair
     let assert Ok(_) = simplifile.write(gen_dir <> "/" <> name, contents)
   })
+}
+
+/// Runs a `main.gleam` against the generated modules and returns its stdout.
+///
+/// Compiling is not enough for the query readers: their whole job is what they
+/// do with a real query string — which values are accepted, which are rejected,
+/// and with which error. A string comparison cannot see any of that.
+fn should_run(codegen_ir: CodegenIR, main_source: String) -> String {
+  write_generated(codegen_ir)
+  let assert Ok(_) =
+    simplifile.write(project_dir <> "/src/main.gleam", main_source)
+
+  let output =
+    shell(
+      "cd " <> project_dir <> " && gleam run -m main 2>&1; echo __NORI_EXIT:$?",
+    )
+
+  // Stale between cases: a `main.gleam` left behind references modules the next
+  // spec may not generate, so the next `gleam build` fails for the wrong reason.
+  let _ = simplifile.delete(project_dir <> "/src/main.gleam")
+
+  case string.contains(output, "__NORI_EXIT:0") {
+    True -> output
+    False -> panic as { "generated code failed to run:\n" <> output }
+  }
+}
+
+/// #8: the readers accept and reject what the spec says they should.
+pub fn query_readers_behave_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Query behaviour
+  version: '1.0.0'
+paths:
+  /posts:
+    get:
+      operationId: listPosts
+      parameters:
+        - name: author
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: ratio
+          in: query
+          schema:
+            type: number
+        - name: archived
+          in: query
+          schema:
+            type: boolean
+        - name: tag
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/PostStatus'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: string
+components:
+  schemas:
+    PostStatus:
+      type: string
+      enum: [draft, published]"
+
+  let main_source =
+    "import generated/routes
+import gleam/io
+import gleam/string
+
+fn show(label: String, result: a) -> Nil {
+  io.println(label <> \"=\" <> string.inspect(result))
+}
+
+pub fn main() {
+  // Everything present and well-formed.
+  show(\"full\", routes.list_posts_query([
+    #(\"author\", \"ada\"),
+    #(\"page\", \"2\"),
+    #(\"ratio\", \"1.5\"),
+    #(\"archived\", \"true\"),
+    #(\"tag\", \"a\"),
+    #(\"tag\", \"b\"),
+    #(\"status\", \"draft\"),
+  ]))
+
+  // Only the required one: the rest are None, and the repeated key is [].
+  show(\"minimal\", routes.list_posts_query([#(\"author\", \"ada\")]))
+
+  // Required missing.
+  show(\"missing\", routes.list_posts_query([#(\"page\", \"2\")]))
+
+  // Malformed values, one per parser.
+  show(\"bad_int\", routes.list_posts_query([#(\"author\", \"a\"), #(\"page\", \"many\")]))
+  show(\"bad_float\", routes.list_posts_query([#(\"author\", \"a\"), #(\"ratio\", \"x\")]))
+  show(\"bad_bool\", routes.list_posts_query([#(\"author\", \"a\"), #(\"archived\", \"yes\")]))
+  show(\"bad_enum\", routes.list_posts_query([#(\"author\", \"a\"), #(\"status\", \"nope\")]))
+
+  // An integer is a valid number in a query string.
+  show(\"int_as_float\", routes.list_posts_query([#(\"author\", \"a\"), #(\"ratio\", \"2\")]))
+
+  // `?archived` with no value is present-is-true; 1/0 are the form spellings.
+  show(\"bare_bool\", routes.list_posts_query([#(\"author\", \"a\"), #(\"archived\", \"\")]))
+  show(\"one_bool\", routes.list_posts_query([#(\"author\", \"a\"), #(\"archived\", \"1\")]))
+  show(\"zero_bool\", routes.list_posts_query([#(\"author\", \"a\"), #(\"archived\", \"0\")]))
+
+  // A comma-joined value is one value, not a list: splitting it would corrupt
+  // search text.
+  show(\"comma\", routes.list_posts_query([#(\"author\", \"a,b\")]))
+
+  // First wins for a scalar sent twice.
+  show(\"repeated_scalar\", routes.list_posts_query([
+    #(\"author\", \"first\"),
+    #(\"author\", \"second\"),
+  ]))
+}
+"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+
+  assert_line(
+    "full=Ok(ListPostsQuery(\"ada\", Some(2), Some(1.5), Some(True), [\"a\", \"b\"], Some(PostStatusDraft)))",
+  )
+  assert_line("minimal=Ok(ListPostsQuery(\"ada\", None, None, None, [], None))")
+  assert_line("missing=Error(MissingQueryParam(\"author\"))")
+  assert_line("bad_int=Error(InvalidQueryParam(\"page\", \"integer\"))")
+  assert_line("bad_float=Error(InvalidQueryParam(\"ratio\", \"number\"))")
+  assert_line("bad_bool=Error(InvalidQueryParam(\"archived\", \"boolean\"))")
+  assert_line("bad_enum=Error(InvalidQueryParam(\"status\", \"PostStatus\"))")
+  assert_line(
+    "int_as_float=Ok(ListPostsQuery(\"a\", None, Some(2.0), None, [], None))",
+  )
+  assert_line(
+    "bare_bool=Ok(ListPostsQuery(\"a\", None, None, Some(True), [], None))",
+  )
+  assert_line(
+    "one_bool=Ok(ListPostsQuery(\"a\", None, None, Some(True), [], None))",
+  )
+  assert_line(
+    "zero_bool=Ok(ListPostsQuery(\"a\", None, None, Some(False), [], None))",
+  )
+  assert_line("comma=Ok(ListPostsQuery(\"a,b\", None, None, None, [], None))")
+  assert_line(
+    "repeated_scalar=Ok(ListPostsQuery(\"first\", None, None, None, [], None))",
+  )
+}
+
+/// #8: a required repeated parameter with nothing sent is missing, not empty.
+pub fn required_list_query_param_behaves_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Required list
+  version: '1.0.0'
+paths:
+  /posts:
+    get:
+      operationId: listPosts
+      parameters:
+        - name: tag
+          in: query
+          required: true
+          schema:
+            type: array
+            items:
+              type: integer
+      responses:
+        '204':
+          description: OK"
+
+  let main_source =
+    "import generated/routes
+import gleam/io
+import gleam/string
+
+pub fn main() {
+  io.println(\"none=\" <> string.inspect(routes.list_posts_query([])))
+  io.println(
+    \"some=\"
+    <> string.inspect(routes.list_posts_query([#(\"tag\", \"1\"), #(\"tag\", \"2\")])),
+  )
+  io.println(
+    \"bad=\" <> string.inspect(routes.list_posts_query([#(\"tag\", \"one\")])),
+  )
+}
+"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+
+  string.contains(output, "none=Error(MissingQueryParam(\"tag\"))")
+  |> should.be_true
+  string.contains(output, "some=Ok(ListPostsQuery([1, 2]))") |> should.be_true
+  string.contains(output, "bad=Error(InvalidQueryParam(\"tag\", \"integer\"))")
+  |> should.be_true
+}
+
+/// #8: query parameters get server-side readers, and the generated module has to
+/// compile with every parameter shape at once — required, optional, repeated,
+/// numeric, boolean, and an enum from components.
+pub fn query_param_readers_output_compiles_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Query readers
+  version: '1.0.0'
+paths:
+  /posts:
+    get:
+      operationId: listPosts
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/PostStatus'
+        - name: author
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: ratio
+          in: query
+          schema:
+            type: number
+        - name: archived
+          in: query
+          schema:
+            type: boolean
+        - name: tag
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: string
+components:
+  schemas:
+    PostStatus:
+      type: string
+      enum: [draft, published]"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  ir_builder.build(doc) |> should_compile
+}
+
+/// A spec with no query parameters must not emit the readers at all: an unused
+/// private helper is a warning in a file the consumer cannot edit.
+pub fn no_query_params_emits_no_readers_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: No query
+  version: '1.0.0'
+paths:
+  /ping:
+    get:
+      operationId: ping
+      responses:
+        '204':
+          description: OK"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let ir = ir_builder.build(doc)
+  let output = gleam_routes.generate(ir, "app/generated")
+
+  output |> string.contains("QueryError") |> should.be_false
+  output |> string.contains("query_first") |> should.be_false
+
+  ir |> should_compile
 }
