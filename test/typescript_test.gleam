@@ -374,3 +374,83 @@ pub fn generate_fetch_client_honours_no_generated_suffix_test() {
   |> string.contains("from \"./types\"")
   |> should.be_true
 }
+
+pub fn generate_client_imports_only_referenced_types_test() {
+  // `noUnusedLocals` is on by default in the Vite and TanStack Start templates,
+  // so importing a type the file never uses fails the consumer's build.
+  let output =
+    fetch_client.generate(sample_ir(), templates.default_ts_modules())
+
+  output
+  |> string.contains("Pet")
+  |> should.be_true
+
+  // Status is declared in the spec but no operation references it.
+  output
+  |> string.contains("Status")
+  |> should.be_false
+}
+
+pub fn generate_hooks_imports_only_referenced_names_test() {
+  let output = react_query.generate(sample_ir(), templates.default_ts_modules())
+
+  output
+  |> string.contains("Status")
+  |> should.be_false
+
+  // Every operation has a hook, so every client function stays imported.
+  output
+  |> string.contains("listPets")
+  |> should.be_true
+}
+
+pub fn references_respects_identifier_boundaries_test() {
+  // A longer name must not keep the shorter one alive: an IR whose only
+  // referenced type is IssueDetail must not import Issue.
+  let base = sample_ir()
+  let ir_with_prefix =
+    CodegenIR(
+      ..base,
+      types: [
+        RecordType(name: "Issue", fields: [], description: None),
+        RecordType(name: "IssueDetail", fields: [], description: None),
+      ],
+      endpoints: [
+        Endpoint(
+          operation_id: "get_issue",
+          method: ir.Get,
+          path: "/issues/{id}",
+          summary: None,
+          description: None,
+          tags: [],
+          parameters: [
+            EndpointParam(
+              name: "id",
+              location: ir.PathParam,
+              type_ref: Primitive(ir.PString),
+              required: True,
+              description: None,
+            ),
+          ],
+          request_body: None,
+          responses: [
+            ResponseIR(
+              status_code: "200",
+              description: "OK",
+              content_type: Some("application/json"),
+              type_ref: Some(Named("IssueDetail")),
+            ),
+          ],
+          deprecated: False,
+          security: None,
+        ),
+      ],
+    )
+
+  let output =
+    fetch_client.generate(ir_with_prefix, templates.default_ts_modules())
+
+  output
+  |> string.contains("import type { IssueDetail } from")
+  |> should.be_true
+}

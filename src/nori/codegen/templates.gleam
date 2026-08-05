@@ -266,7 +266,6 @@ fn field_to_ctx(field: Field, config: TsConfig) -> Value {
 // ---------------------------------------------------------------------------
 
 pub fn ir_to_ts_client_context(ir: CodegenIR, modules: TsModules) -> Value {
-  let type_imports = generate_type_imports(ir, modules)
   let cookie_auth = has_cookie_auth(ir)
 
   let config_type =
@@ -299,17 +298,20 @@ pub fn ir_to_ts_client_context(ir: CodegenIR, modules: TsModules) -> Value {
     <> "}"
 
   let fn_count = list.length(ir.endpoints)
-  let functions =
+  let fn_texts =
     ir.endpoints
-    |> list.index_map(fn(ep, idx) {
+    |> list.map(fn(ep) { generate_endpoint_function(ep, cookie_auth) })
+  let functions =
+    fn_texts
+    |> list.index_map(fn(text, idx) {
       ctx.Dict([
-        ctx.Prop(
-          "function_text",
-          ctx.Str(generate_endpoint_function(ep, cookie_auth)),
-        ),
+        ctx.Prop("function_text", ctx.Str(text)),
         ctx.Prop("is_last", ctx.Bool(idx == fn_count - 1)),
       ])
     })
+
+  let type_imports =
+    generate_type_imports(ir, modules, string.join(fn_texts, "\n"))
 
   ctx.Dict([
     ctx.Prop("type_imports", ctx.Str(type_imports)),
@@ -508,8 +510,6 @@ fn build_response_handling(return_type: String) -> String {
 
 pub fn ir_to_ts_react_query_context(ir: CodegenIR, modules: TsModules) -> Value {
   let rq_imports = generate_rq_imports(ir)
-  let type_imports = generate_type_imports(ir, modules)
-  let client_imports = generate_client_imports(ir, modules)
 
   // Key factories
   let tags =
@@ -548,15 +548,19 @@ pub fn ir_to_ts_react_query_context(ir: CodegenIR, modules: TsModules) -> Value 
 
   // Hooks
   let hook_count = list.length(ir.endpoints)
+  let hook_texts = ir.endpoints |> list.map(generate_react_query_hook)
   let hooks =
-    ir.endpoints
-    |> list.index_map(fn(ep, idx) {
-      let hook_text = generate_react_query_hook(ep)
+    hook_texts
+    |> list.index_map(fn(hook_text, idx) {
       ctx.Dict([
         ctx.Prop("hook_text", ctx.Str(hook_text)),
         ctx.Prop("is_last", ctx.Bool(idx == hook_count - 1)),
       ])
     })
+
+  let body = string.join(hook_texts, "\n")
+  let type_imports = generate_type_imports(ir, modules, body)
+  let client_imports = generate_client_imports(ir, modules, body)
 
   ctx.Dict([
     ctx.Prop("rq_imports", ctx.Str(rq_imports)),
@@ -669,19 +673,21 @@ fn generate_rq_mutation_hook(endpoint: Endpoint) -> String {
 
 pub fn ir_to_ts_swr_context(ir: CodegenIR, modules: TsModules) -> Value {
   let swr_imports = generate_swr_imports(ir)
-  let type_imports = generate_type_imports(ir, modules)
-  let client_imports = generate_client_imports(ir, modules)
 
   let hook_count = list.length(ir.endpoints)
+  let hook_texts = ir.endpoints |> list.map(generate_swr_hook)
   let hooks =
-    ir.endpoints
-    |> list.index_map(fn(ep, idx) {
-      let hook_text = generate_swr_hook(ep)
+    hook_texts
+    |> list.index_map(fn(hook_text, idx) {
       ctx.Dict([
         ctx.Prop("hook_text", ctx.Str(hook_text)),
         ctx.Prop("is_last", ctx.Bool(idx == hook_count - 1)),
       ])
     })
+
+  let body = string.join(hook_texts, "\n")
+  let type_imports = generate_type_imports(ir, modules, body)
+  let client_imports = generate_client_imports(ir, modules, body)
 
   ctx.Dict([
     ctx.Prop("swr_imports", ctx.Str(swr_imports)),
@@ -841,7 +847,11 @@ fn build_swr_key(endpoint: Endpoint) -> String {
 // Shared helpers (used by multiple context builders)
 // ---------------------------------------------------------------------------
 
-fn generate_type_imports(ir: CodegenIR, modules: TsModules) -> String {
+fn generate_type_imports(
+  ir: CodegenIR,
+  modules: TsModules,
+  body: String,
+) -> String {
   let type_names =
     ir.types
     |> list.map(fn(td) {
@@ -852,6 +862,7 @@ fn generate_type_imports(ir: CodegenIR, modules: TsModules) -> String {
         AliasType(name, _, _) -> name
       }
     })
+    |> list.filter(references(body, _))
 
   case type_names {
     [] -> ""
@@ -864,10 +875,15 @@ fn generate_type_imports(ir: CodegenIR, modules: TsModules) -> String {
   }
 }
 
-fn generate_client_imports(ir: CodegenIR, modules: TsModules) -> String {
+fn generate_client_imports(
+  ir: CodegenIR,
+  modules: TsModules,
+  body: String,
+) -> String {
   let fn_names =
     ir.endpoints
     |> list.map(fn(e) { shared.to_camel_case(e.operation_id) })
+    |> list.filter(references(body, _))
 
   case fn_names {
     [] -> ""
@@ -877,6 +893,62 @@ fn generate_client_imports(ir: CodegenIR, modules: TsModules) -> String {
       <> " } from \""
       <> modules.client
       <> "\";"
+  }
+}
+
+/// True if `body` mentions `name` as a whole identifier. Imports are filtered
+/// through this because a project with `noUnusedLocals` — the Vite and TanStack
+/// Start defaults — fails to compile on an import of a type the file never uses,
+/// and a spec's schema list is always wider than any one generated module.
+///
+/// The boundary check matters: `Issue` must not be kept alive by a mention of
+/// `IssueDetail`.
+fn references(body: String, name: String) -> Bool {
+  case string.split(body, name) {
+    [] | [_] -> False
+    [first, ..rest] -> bounded_occurrence(first, rest)
+  }
+}
+
+fn bounded_occurrence(before: String, after: List(String)) -> Bool {
+  case after {
+    [] -> False
+    [next, ..rest] ->
+      case
+        !is_ident_char(last_grapheme(before))
+        && !is_ident_char(first_grapheme(next))
+      {
+        True -> True
+        // A rejected split means the name was part of a longer identifier; the
+        // text that followed it still belongs to that identifier, so the next
+        // gap is scanned with `next` as its left-hand side.
+        False -> bounded_occurrence(next, rest)
+      }
+  }
+}
+
+fn last_grapheme(s: String) -> String {
+  case string.last(s) {
+    Ok(c) -> c
+    Error(_) -> ""
+  }
+}
+
+fn first_grapheme(s: String) -> String {
+  case string.first(s) {
+    Ok(c) -> c
+    Error(_) -> ""
+  }
+}
+
+fn is_ident_char(c: String) -> Bool {
+  case c {
+    "" -> False
+    _ ->
+      string.contains(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$",
+        c,
+      )
   }
 }
 
