@@ -10,6 +10,8 @@ import nori/codegen/ir.{
   CodegenIR, Endpoint, EndpointParam, Field, Get, Named, PString, PathParam,
   Post, Primitive, RecordType, ResponseIR,
 }
+import nori/codegen/ir_builder
+import nori/yaml
 
 pub fn main() {
   gleeunit.main()
@@ -457,4 +459,47 @@ fn should_not_contain(haystack: String, needle: String) -> Nil {
     False -> Nil
     True -> panic as { "expected output NOT to contain:\n" <> needle }
   }
+}
+
+pub fn empty_security_override_marks_a_route_public_test() {
+  // `security: []` with global security is how OpenAPI marks one operation
+  // public. Decoded as absent, every route came back as requiring auth.
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Sec
+  version: '1.0.0'
+security:
+  - bearerAuth: []
+paths:
+  /login:
+    post:
+      operationId: login
+      security: []
+      responses:
+        '204':
+          description: OK
+  /me:
+    get:
+      operationId: getMe
+      responses:
+        '204':
+          description: OK
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let ir = ir_builder.build(doc)
+  let output = gleam_middleware.generate(ir, "app/generated")
+
+  output
+  |> string.contains("routes.Login -> True")
+  |> should.be_true
+
+  output
+  |> string.contains("_ -> False")
+  |> should.be_true
 }
