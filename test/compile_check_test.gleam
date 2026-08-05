@@ -140,6 +140,50 @@ paths:
   ir_builder.build(doc) |> should_compile
 }
 
+/// #24: parameters named after the generated locals must not shadow them. A
+/// query parameter called `query` used to shadow the `let query = []`
+/// accumulator, so the next arm read the list where the Option was meant.
+pub fn param_named_like_a_local_output_compiles_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Shadow
+  version: '1.0.0'
+paths:
+  /a/{path}:
+    get:
+      operationId: getA
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: query
+          in: query
+          schema:
+            type: string
+        - name: query_string
+          in: query
+          schema:
+            type: string
+        - name: v
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: string"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  ir_builder.build(doc) |> should_compile
+}
+
 /// #23: a $ref'd path parameter must reach the Route variant and handler type.
 pub fn reffed_param_output_compiles_test() {
   let yaml_str =
