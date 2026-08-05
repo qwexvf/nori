@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.2 - 2026-08-05
+
+### Fixed
+
+- Generated TypeScript imported every schema type and every client function,
+  not the ones the module referenced. Under `noUnusedLocals` — on in the Vite
+  and TanStack Start templates — `tsc --noEmit` failed on otherwise correct
+  output (`'ErrorBody' is declared but never used`). Import lists are now
+  filtered to names the emitted body mentions as whole identifiers, so
+  `IssueDetail` does not keep an unused `Issue` alive. (#34)
+
 ## v1.3.1 - 2026-08-05
 
 ### Fixed
