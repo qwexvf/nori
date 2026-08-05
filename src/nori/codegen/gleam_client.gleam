@@ -336,17 +336,30 @@ fn generate_request_fn(
     )
   let all_args = "config: ClientConfig" <> param_args
 
+  let locals = build_locals(endpoint)
+
   // Build path with substitution
   let path_expr =
     build_path_expr(endpoint.path, path_params, name_prefix, enum_names)
 
   // Build query string
-  let query_section = build_query_section(query_params, name_prefix, enum_names)
+  let query_section =
+    build_query_section(query_params, name_prefix, enum_names, locals)
   let query_apply = case query_params {
     [] -> ""
     _ ->
-      "  let query_string = uri.query_to_string(query)\n"
-      <> "  let path = path <> \"?\" <> query_string\n"
+      "  let "
+      <> locals.query_string
+      <> " = uri.query_to_string("
+      <> locals.query
+      <> ")\n"
+      <> "  let "
+      <> locals.path
+      <> " = "
+      <> locals.path
+      <> " <> \"?\" <> "
+      <> locals.query_string
+      <> "\n"
   }
 
   // Build request body
@@ -379,7 +392,9 @@ fn generate_request_fn(
   <> "("
   <> all_args
   <> ") -> Request(String) {\n"
-  <> "  let path = "
+  <> "  let "
+  <> locals.path
+  <> " = "
   <> path_expr
   <> "\n"
   <> query_section
@@ -389,7 +404,9 @@ fn generate_request_fn(
   <> method_str
   <> ")\n"
   <> "  |> request.set_host(config.base_url)\n"
-  <> "  |> request.set_path(path)\n"
+  <> "  |> request.set_path("
+  <> locals.path
+  <> ")\n"
   <> "  |> fn(req) {\n"
   <> "    list.fold(config.headers, req, fn(r, h) {\n"
   <> "      request.set_header(r, h.0, h.1)\n"
@@ -526,6 +543,7 @@ fn build_query_section(
   query_params: List(EndpointParam),
   name_prefix: String,
   enum_names: List(String),
+  locals: Locals,
 ) -> String {
   case query_params {
     [] -> ""
@@ -538,7 +556,11 @@ fn build_query_section(
             True -> {
               let value_expr =
                 param_to_string_expr(snake, p.type_ref, name_prefix, enum_names)
-              "  let query = list.append(query, [#(\""
+              "  let "
+              <> locals.query
+              <> " = list.append("
+              <> locals.query
+              <> ", [#(\""
               <> p.name
               <> "\", "
               <> value_expr
@@ -546,23 +568,65 @@ fn build_query_section(
             }
             False -> {
               let value_expr =
-                param_to_string_expr("v", p.type_ref, name_prefix, enum_names)
-              "  let query = case "
+                param_to_string_expr(
+                  locals.value,
+                  p.type_ref,
+                  name_prefix,
+                  enum_names,
+                )
+              "  let "
+              <> locals.query
+              <> " = case "
               <> snake
               <> " {\n"
-              <> "    option.Some(v) -> list.append(query, [#(\""
+              <> "    option.Some("
+              <> locals.value
+              <> ") -> list.append("
+              <> locals.query
+              <> ", [#(\""
               <> p.name
               <> "\", "
               <> value_expr
               <> ")])\n"
-              <> "    option.None -> query\n"
+              <> "    option.None -> "
+              <> locals.query
+              <> "\n"
               <> "  }\n"
             }
           }
         })
         |> string.join("")
-      "  let query = []\n" <> lines
+      "  let " <> locals.query <> " = []\n" <> lines
     }
+  }
+}
+
+/// Names for the locals the generated request function binds. A query
+/// parameter called `query` used to shadow the accumulator — `let query = []`
+/// followed by `case query` then read the list, not the parameter, and the
+/// function did not compile. Each name gets trailing underscores until it
+/// cannot collide with a parameter of this endpoint.
+type Locals {
+  Locals(path: String, query: String, query_string: String, value: String)
+}
+
+fn build_locals(endpoint: Endpoint) -> Locals {
+  let taken =
+    endpoint.parameters
+    |> list.map(fn(p) { to_snake_case(p.name) })
+
+  Locals(
+    path: fresh_name("path", taken),
+    query: fresh_name("query", taken),
+    query_string: fresh_name("query_string", taken),
+    value: fresh_name("v", taken),
+  )
+}
+
+fn fresh_name(base: String, taken: List(String)) -> String {
+  case list.contains(taken, base) {
+    False -> base
+    True -> fresh_name(base <> "_", taken)
   }
 }
 

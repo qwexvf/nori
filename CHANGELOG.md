@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.1 - 2026-08-05
+
+### Fixed
+
+- A parameter whose name matched one of the generated locals shadowed it, and
+  the generated Gleam client did not compile. A query parameter called `query`
+  hit `let query = []` and the following arm read the accumulator where the
+  `Option` was meant (`Expected List(#(String, String)), found Option(String)`).
+  The locals the request function binds — `path`, `query`, `query_string`, and
+  the `Some(v)` binding — now take trailing underscores until they cannot
+  collide with a parameter of that endpoint. (#24)
+
 ## v1.3.0 - 2026-08-05
 
 Every fix here is in the TypeScript / React Query output, and each one is
