@@ -8,7 +8,9 @@ import gleam/dict
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/pair
 import gleam/result
+import gleam/set
 import gleam/string
 import glint
 import nori/bundler
@@ -20,6 +22,7 @@ import nori/codegen/gleam_types
 import nori/codegen/ir.{type CodegenIR}
 import nori/codegen/ir_builder
 import nori/codegen/plugin
+import nori/codegen/templates
 import nori/codegen/typescript/fetch_client
 import nori/codegen/typescript/react_query
 import nori/codegen/typescript/swr
@@ -256,28 +259,48 @@ fn generate_all_enabled(
   let swr_tc = apply_output_override(out.swr, output_override)
   let fetch_tc = apply_output_override(out.fetch, output_override)
 
-  list.flatten([
-    case gleam_tc.enabled {
-      True -> generate_gleam(codegen_ir, gleam_tc)
-      False -> []
-    },
-    case ts_tc.enabled {
-      True -> generate_typescript(codegen_ir, ts_tc)
-      False -> []
-    },
-    case rq_tc.enabled {
-      True -> generate_react_query(codegen_ir, rq_tc, ts_tc)
-      False -> []
-    },
-    case swr_tc.enabled {
-      True -> generate_swr(codegen_ir, swr_tc, ts_tc)
-      False -> []
-    },
-    case fetch_tc.enabled {
-      True -> generate_fetch(codegen_ir, fetch_tc, ts_tc)
-      False -> []
-    },
-  ])
+  // Deduplicated by path: the hooks targets each emit the shared `types` and
+  // `client` files, so enabling typescript alongside react-query into one
+  // directory used to write both twice per run.
+  dedupe_by_path(
+    list.flatten([
+      case gleam_tc.enabled {
+        True -> generate_gleam(codegen_ir, gleam_tc)
+        False -> []
+      },
+      case ts_tc.enabled {
+        True -> generate_typescript(codegen_ir, ts_tc)
+        False -> []
+      },
+      case rq_tc.enabled {
+        True -> generate_react_query(codegen_ir, rq_tc, ts_tc)
+        False -> []
+      },
+      case swr_tc.enabled {
+        True -> generate_swr(codegen_ir, swr_tc, ts_tc)
+        False -> []
+      },
+      case fetch_tc.enabled {
+        True -> generate_fetch(codegen_ir, fetch_tc, ts_tc)
+        False -> []
+      },
+    ]),
+  )
+}
+
+fn dedupe_by_path(
+  files: List(plugin.GeneratedFile),
+) -> List(plugin.GeneratedFile) {
+  files
+  |> list.fold(#([], set.new()), fn(acc, file) {
+    let #(kept, seen) = acc
+    case set.contains(seen, file.path) {
+      True -> acc
+      False -> #([file, ..kept], set.insert(seen, file.path))
+    }
+  })
+  |> pair.first
+  |> list.reverse
 }
 
 fn apply_output_override(
@@ -288,6 +311,14 @@ fn apply_output_override(
     "" -> tc
     dir -> config.TargetConfig(..tc, dir: dir)
   }
+}
+
+// The generated TypeScript imports itself by module specifier, so the
+// specifiers have to follow the same `generated_suffix` setting that decides
+// the filenames. The hooks targets import the `typescript` target's files, so
+// they are handed that target's config, not their own.
+fn ts_modules(tc: TargetConfig) -> templates.TsModules {
+  templates.ts_modules_for_suffix(tc.generated_suffix)
 }
 
 fn suffix(tc: TargetConfig, base: String, ext: String) -> String {
@@ -487,7 +518,7 @@ fn generate_typescript(
     ),
     plugin.GeneratedFile(
       path: tc.dir <> "/" <> suffix(tc, "client", ".ts"),
-      content: fetch_client.generate(codegen_ir),
+      content: fetch_client.generate(codegen_ir, ts_modules(tc)),
     ),
   ]
 }
@@ -502,7 +533,7 @@ fn generate_react_query(
     [
       plugin.GeneratedFile(
         path: tc.dir <> "/" <> suffix(tc, "hooks", ".ts"),
-        content: react_query.generate(codegen_ir),
+        content: react_query.generate(codegen_ir, ts_modules(ts_tc)),
       ),
     ],
   ])
@@ -518,7 +549,7 @@ fn generate_swr(
     [
       plugin.GeneratedFile(
         path: tc.dir <> "/" <> suffix(tc, "swr-hooks", ".ts"),
-        content: swr.generate(codegen_ir),
+        content: swr.generate(codegen_ir, ts_modules(ts_tc)),
       ),
     ],
   ])
