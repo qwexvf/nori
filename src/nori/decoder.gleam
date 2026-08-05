@@ -398,10 +398,14 @@ fn operation_decoder() -> Decoder(Operation) {
     None,
     option_decoder(decode.bool),
   )
+  // ⚠️ Option, not a list with an empty default. `security: []` on an operation
+  // is how OpenAPI marks it public when the document has global security, so an
+  // empty list has to stay distinguishable from an absent field. Collapsing both
+  // to None made every route require auth.
   use security <- decode.optional_field(
     "security",
-    [],
-    decode.list(security_requirement_decoder()),
+    None,
+    decode.list(security_requirement_decoder()) |> decode.map(Some),
   )
   use servers <- decode.optional_field(
     "servers",
@@ -421,10 +425,7 @@ fn operation_decoder() -> Decoder(Operation) {
     responses: responses,
     callbacks: callbacks,
     deprecated: deprecated,
-    security: case security {
-      [] -> None
-      s -> Some(s)
-    },
+    security: security,
     servers: servers,
     extensions: extensions,
   ))

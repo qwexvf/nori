@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.3 - 2026-08-05
+
+### Fixed
+
+- `security: []` on an operation was decoded as an absent field, so the override
+  that marks one operation public under a document-wide `security` was lost and
+  `is_public_route` returned `False` for every route — including the login
+  endpoint, which cannot require a credential it issues. An empty requirement
+  list now stays distinguishable from no list at all.
+
 ## v1.3.2 - 2026-08-05
 
 ### Fixed
