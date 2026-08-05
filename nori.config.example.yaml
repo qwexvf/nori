@@ -11,7 +11,10 @@
 spec: ./openapi.yaml
 
 # Output configuration per target language/framework.
-# Each target can be independently enabled/disabled with its own output directory.
+#
+# Only the Gleam target runs by default. A TypeScript target runs when this file
+# names it — writing a block for one is the request, and `enabled: false` turns it
+# back off.
 output:
 
   # Gleam server-side code generation
@@ -20,10 +23,24 @@ output:
   #   - client.gleam     — Framework-agnostic HTTP request builders + response decoders
   #   - routes.gleam     — Route union type + match_route(method, segments) pattern matcher
   #   - middleware.gleam  — Auth extractors, CORS, content-type validation (from securitySchemes)
+  #   - routes.gleam also carries a typed query-parameter reader per endpoint
+  #     that declares them
   gleam:
     enabled: true                 # Set to false to skip Gleam generation entirely
     dir: ./src/generated          # Output directory for generated .gleam files
     generated_suffix: false       # false = types.gleam, true = types.generated.gleam
+
+    # Optional: send individual files elsewhere. For the common
+    # backend / frontend / shared split, the four modules do not all belong to
+    # the same project. Anything not listed falls back to `dir`.
+    # dirs:
+    #   routes: ./backend/src/generated
+    #   middleware: ./backend/src/generated
+    #   client: ./frontend/src/generated
+    #
+    # Module path the other files import `types` by. Needed when `types` lands in
+    # a different Gleam project, where it cannot be derived from their own dir.
+    # types_module: shared/generated
 
   # Plain TypeScript types and fetch-based API client
   # Generates:

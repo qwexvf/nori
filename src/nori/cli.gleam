@@ -176,6 +176,19 @@ fn generate_command() -> glint.Command(Nil) {
           let files =
             generate_files_from_config(codegen_ir, cfg, target_val, output_dir)
 
+          // Said once, before the paths scroll past: an unrecognised `dirs` key
+          // is silently equivalent to not writing one at all.
+          case unknown_dirs_keys(cfg.output.gleam) {
+            [] -> Nil
+            unknown ->
+              io.println(
+                "Warning: ignoring unknown output.gleam.dirs key(s): "
+                <> string.join(unknown, ", ")
+                <> "\n  known files: "
+                <> string.join(gleam_file_names, ", "),
+              )
+          }
+
           case files {
             [] -> fail("No files generated. Check your target or config.")
             _ -> {
@@ -209,7 +222,7 @@ fn generate_files_from_config(
   output_override: String,
 ) -> List(plugin.GeneratedFile) {
   case target_override {
-    "" | "all" -> generate_all_enabled(codegen_ir, cfg, output_override)
+    "" | "all" -> plan_files(codegen_ir, cfg, output_override)
     "gleam" ->
       generate_gleam(
         codegen_ir,
@@ -247,7 +260,13 @@ fn generate_files_from_config(
   }
 }
 
-fn generate_all_enabled(
+/// The files a config would write, without writing them.
+///
+/// Which targets run and where each file lands are the two config decisions that
+/// have surprised people, so this is public: tests assert on the real planner
+/// rather than re-deriving its rules, and a future `--dry-run` needs exactly
+/// this.
+pub fn plan_files(
   codegen_ir: CodegenIR,
   cfg: Config,
   output_override: String,
@@ -309,7 +328,10 @@ fn apply_output_override(
 ) -> TargetConfig {
   case output_override {
     "" -> tc
-    dir -> config.TargetConfig(..tc, dir: dir)
+    // ⚠️ `dirs` is cleared too. `--output` means "put everything here", and a
+    // per-file override left in place would quietly send one module somewhere
+    // else — the one thing the flag exists to prevent.
+    dir -> config.TargetConfig(..tc, dir: dir, dirs: dict.new())
   }
 }
 
@@ -353,32 +375,64 @@ fn generate_gleam(
   codegen_ir: CodegenIR,
   tc: TargetConfig,
 ) -> List(plugin.GeneratedFile) {
-  let module_prefix = derive_module_prefix(tc.dir)
+  // ⚠️ Each generator is handed the module path of the file it imports, derived
+  // from *that* file's directory rather than its own. `routes` and `client`
+  // import types; `middleware` imports routes, to match on `Route` variants.
+  // With `dirs` splitting the output across projects these are different paths,
+  // and handing middleware the types path made it import a routes module that
+  // does not live there.
+  let types_module = case tc.types_module {
+    "" -> derive_module_prefix(file_dir(tc, "types"))
+    explicit -> explicit
+  }
+  let routes_module = derive_module_prefix(file_dir(tc, "routes"))
+
   // A spec with no schemas would otherwise get a types module holding nothing
   // but a header comment, which the compiler warns about as an empty module.
   let types_files = case codegen_ir.types {
     [] -> []
     _ -> [
       plugin.GeneratedFile(
-        path: tc.dir <> "/" <> suffix(tc, "types", ".gleam"),
+        path: file_dir(tc, "types") <> "/" <> suffix(tc, "types", ".gleam"),
         content: gleam_types.generate(codegen_ir),
       ),
     ]
   }
   list.append(types_files, [
     plugin.GeneratedFile(
-      path: tc.dir <> "/" <> suffix(tc, "client", ".gleam"),
-      content: gleam_client.generate(codegen_ir, module_prefix),
+      path: file_dir(tc, "client") <> "/" <> suffix(tc, "client", ".gleam"),
+      content: gleam_client.generate(codegen_ir, types_module),
     ),
     plugin.GeneratedFile(
-      path: tc.dir <> "/" <> suffix(tc, "routes", ".gleam"),
-      content: gleam_routes.generate(codegen_ir, module_prefix),
+      path: file_dir(tc, "routes") <> "/" <> suffix(tc, "routes", ".gleam"),
+      content: gleam_routes.generate(codegen_ir, types_module),
     ),
     plugin.GeneratedFile(
-      path: tc.dir <> "/" <> suffix(tc, "middleware", ".gleam"),
-      content: gleam_middleware.generate(codegen_ir, module_prefix),
+      path: file_dir(tc, "middleware")
+        <> "/"
+        <> suffix(tc, "middleware", ".gleam"),
+      content: gleam_middleware.generate(codegen_ir, routes_module),
     ),
   ])
+}
+
+/// Where one generated file goes: its `dirs` entry, or the target's `dir`.
+fn file_dir(tc: TargetConfig, name: String) -> String {
+  dict.get(tc.dirs, name) |> result.unwrap(tc.dir)
+}
+
+/// The only keys `dirs` accepts, which is also the set of generated Gleam files.
+const gleam_file_names = ["types", "routes", "client", "middleware"]
+
+/// Names in `dirs` that are not generated files.
+///
+/// A typo like `route:` would otherwise be accepted in silence and the file
+/// would go to `dir`, which looks exactly like the override being ignored —
+/// because it is.
+pub fn unknown_dirs_keys(tc: TargetConfig) -> List(String) {
+  dict.keys(tc.dirs)
+  |> list.filter(fn(key) { !list.contains(gleam_file_names, key) })
+  |> list.sort(string.compare)
 }
 
 /// Derive a Gleam module prefix from the configured output directory.

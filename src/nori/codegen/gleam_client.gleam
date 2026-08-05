@@ -14,10 +14,10 @@ import nori/codegen/naming
 
 /// Generates a complete Gleam client module string from the CodegenIR.
 ///
-/// `module_prefix` is the Gleam module path of the generated output directory
-/// (e.g. `"generated"` for `./src/generated`). When non-empty the client
-/// imports the consumer's types module so decoders/encoders resolve; when
-/// empty a comment hint is emitted instead.
+/// `module_prefix` is the Gleam module path of the **types** module (e.g.
+/// `"generated"` for `./src/generated`, or `"shared/generated"` when the config
+/// splits the output across projects). When non-empty the client imports it so
+/// decoders/encoders resolve; when empty a comment hint is emitted instead.
 pub fn generate(ir: CodegenIR, module_prefix: String) -> String {
   let header = generate_header(ir, module_prefix)
   let config_type = generate_config_type()
@@ -110,12 +110,18 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
         || p.location == ir.HeaderParam
       })
     })
-  let needs_int =
-    list.any(stringified_params, fn(p) { p.type_ref == Primitive(ir.PInt) })
-  let needs_float =
-    list.any(stringified_params, fn(p) { p.type_ref == Primitive(ir.PFloat) })
-  let needs_bool =
-    list.any(stringified_params, fn(p) { p.type_ref == Primitive(ir.PBool) })
+  // ⚠️ Through arrays and Option wrappers, not just the bare type. A
+  // `List(Int)` query parameter stringifies each element with `int.to_string`,
+  // and comparing `type_ref` to `Primitive(PInt)` missed it — the generated
+  // client then called a module it never imported.
+  let uses_primitive = fn(prim) {
+    list.any(stringified_params, fn(p) {
+      ir.base_primitive(p.type_ref) == Some(prim)
+    })
+  }
+  let needs_int = uses_primitive(ir.PInt)
+  let needs_float = uses_primitive(ir.PFloat)
+  let needs_bool = uses_primitive(ir.PBool)
   let needs_uri = case query_params {
     [] -> False
     _ -> True
@@ -539,6 +545,66 @@ fn build_path_expr(
   }
 }
 
+fn is_array_param(p: EndpointParam) -> Bool {
+  case ir.strip_optional(p.type_ref) {
+    ir.Array(_) -> True
+    _ -> False
+  }
+}
+
+/// `?tag=a&tag=b`: one pair per element, appended in one go.
+///
+/// `list.map` then a single `list.append`, rather than appending inside a fold:
+/// same result, and the generated code does not re-walk the accumulator once per
+/// element.
+fn array_query_lines(
+  p: EndpointParam,
+  snake: String,
+  name_prefix: String,
+  enum_names: List(String),
+  locals: Locals,
+) -> String {
+  let item_ref = case ir.strip_optional(p.type_ref) {
+    ir.Array(item) -> item
+    other -> other
+  }
+  let item_expr =
+    param_to_string_expr(locals.value, item_ref, name_prefix, enum_names)
+
+  let pairs = fn(source) {
+    "list.append("
+    <> locals.query
+    <> ", list.map("
+    <> source
+    <> ", fn("
+    <> locals.value
+    <> ") { #(\""
+    <> p.name
+    <> "\", "
+    <> item_expr
+    <> ") }))"
+  }
+
+  case p.required {
+    True -> "  let " <> locals.query <> " = " <> pairs(snake) <> "\n"
+    False ->
+      "  let "
+      <> locals.query
+      <> " = case "
+      <> snake
+      <> " {\n"
+      <> "    option.Some("
+      <> locals.value
+      <> "s) -> "
+      <> pairs(locals.value <> "s")
+      <> "\n"
+      <> "    option.None -> "
+      <> locals.query
+      <> "\n"
+      <> "  }\n"
+  }
+}
+
 fn build_query_section(
   query_params: List(EndpointParam),
   name_prefix: String,
@@ -552,47 +618,60 @@ fn build_query_section(
         params
         |> list.map(fn(p) {
           let snake = to_snake_case(p.name)
-          case p.required {
-            True -> {
-              let value_expr =
-                param_to_string_expr(snake, p.type_ref, name_prefix, enum_names)
-              "  let "
-              <> locals.query
-              <> " = list.append("
-              <> locals.query
-              <> ", [#(\""
-              <> p.name
-              <> "\", "
-              <> value_expr
-              <> ")])\n"
-            }
-            False -> {
-              let value_expr =
-                param_to_string_expr(
-                  locals.value,
-                  p.type_ref,
-                  name_prefix,
-                  enum_names,
-                )
-              "  let "
-              <> locals.query
-              <> " = case "
-              <> snake
-              <> " {\n"
-              <> "    option.Some("
-              <> locals.value
-              <> ") -> list.append("
-              <> locals.query
-              <> ", [#(\""
-              <> p.name
-              <> "\", "
-              <> value_expr
-              <> ")])\n"
-              <> "    option.None -> "
-              <> locals.query
-              <> "\n"
-              <> "  }\n"
-            }
+          case is_array_param(p) {
+            // ⚠️ One pair per element, not one pair for the list. OpenAPI's
+            // default `style: form, explode: true` repeats the key, and the
+            // previous output handed the whole list where a String was
+            // expected, so any array-typed query parameter failed to compile.
+            True -> array_query_lines(p, snake, name_prefix, enum_names, locals)
+            False ->
+              case p.required {
+                True -> {
+                  let value_expr =
+                    param_to_string_expr(
+                      snake,
+                      p.type_ref,
+                      name_prefix,
+                      enum_names,
+                    )
+                  "  let "
+                  <> locals.query
+                  <> " = list.append("
+                  <> locals.query
+                  <> ", [#(\""
+                  <> p.name
+                  <> "\", "
+                  <> value_expr
+                  <> ")])\n"
+                }
+                False -> {
+                  let value_expr =
+                    param_to_string_expr(
+                      locals.value,
+                      p.type_ref,
+                      name_prefix,
+                      enum_names,
+                    )
+                  "  let "
+                  <> locals.query
+                  <> " = case "
+                  <> snake
+                  <> " {\n"
+                  <> "    option.Some("
+                  <> locals.value
+                  <> ") -> list.append("
+                  <> locals.query
+                  <> ", [#(\""
+                  <> p.name
+                  <> "\", "
+                  <> value_expr
+                  <> ")])\n"
+                  <> "    option.None -> "
+                  <> locals.query
+                  <> "\n"
+                  <> "  }\n"
+                }
+              }
           }
         })
         |> string.join("")

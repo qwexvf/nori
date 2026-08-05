@@ -15,6 +15,7 @@ import nori/codegen/ir.{
   Head, InCookie, Options, Patch, PathParam, Post, Put, QueryParam, RecordType,
   RequestBodyIR, UnionType,
 }
+import nori/codegen/scan
 import nori/codegen/typescript/shared
 import simplifile
 
@@ -862,7 +863,7 @@ fn generate_type_imports(
         AliasType(name, _, _) -> name
       }
     })
-    |> list.filter(references(body, _))
+    |> list.filter(scan.references(body, _))
 
   case type_names {
     [] -> ""
@@ -883,7 +884,7 @@ fn generate_client_imports(
   let fn_names =
     ir.endpoints
     |> list.map(fn(e) { shared.to_camel_case(e.operation_id) })
-    |> list.filter(references(body, _))
+    |> list.filter(scan.references(body, _))
 
   case fn_names {
     [] -> ""
@@ -893,62 +894,6 @@ fn generate_client_imports(
       <> " } from \""
       <> modules.client
       <> "\";"
-  }
-}
-
-/// True if `body` mentions `name` as a whole identifier. Imports are filtered
-/// through this because a project with `noUnusedLocals` — the Vite and TanStack
-/// Start defaults — fails to compile on an import of a type the file never uses,
-/// and a spec's schema list is always wider than any one generated module.
-///
-/// The boundary check matters: `Issue` must not be kept alive by a mention of
-/// `IssueDetail`.
-fn references(body: String, name: String) -> Bool {
-  case string.split(body, name) {
-    [] | [_] -> False
-    [first, ..rest] -> bounded_occurrence(first, rest)
-  }
-}
-
-fn bounded_occurrence(before: String, after: List(String)) -> Bool {
-  case after {
-    [] -> False
-    [next, ..rest] ->
-      case
-        !is_ident_char(last_grapheme(before))
-        && !is_ident_char(first_grapheme(next))
-      {
-        True -> True
-        // A rejected split means the name was part of a longer identifier; the
-        // text that followed it still belongs to that identifier, so the next
-        // gap is scanned with `next` as its left-hand side.
-        False -> bounded_occurrence(next, rest)
-      }
-  }
-}
-
-fn last_grapheme(s: String) -> String {
-  case string.last(s) {
-    Ok(c) -> c
-    Error(_) -> ""
-  }
-}
-
-fn first_grapheme(s: String) -> String {
-  case string.first(s) {
-    Ok(c) -> c
-    Error(_) -> ""
-  }
-}
-
-fn is_ident_char(c: String) -> Bool {
-  case c {
-    "" -> False
-    _ ->
-      string.contains(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$",
-        c,
-      )
   }
 }
 

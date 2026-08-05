@@ -64,6 +64,13 @@ fn generate_header(ir: CodegenIR) -> String {
         True -> ["import gleam"]
         False -> []
       }
+      // Only when a field is actually optional. A spec of enums and required
+      // fields never mentions Option, and an unused import is a warning in a
+      // file the consumer is told not to edit.
+      let option_import = case uses_option(ir) {
+        True -> ["import gleam/option.{type Option, None, Some}"]
+        False -> []
+      }
       let lines =
         list.flatten([
           [title_comment, ""],
@@ -72,11 +79,34 @@ fn generate_header(ir: CodegenIR) -> String {
           [
             "import gleam/dynamic/decode.{type Decoder}",
             "import gleam/json.{type Json}",
-            "import gleam/option.{type Option, None, Some}",
           ],
+          option_import,
         ])
       string.join(lines, "\n")
     }
+  }
+}
+
+/// True when any generated type mentions `Option` — an optional record field, or
+/// a nullable anywhere inside an alias or union member.
+fn uses_option(ir: CodegenIR) -> Bool {
+  list.any(ir.types, fn(td) {
+    case td {
+      ir.RecordType(_, fields, _) ->
+        list.any(fields, fn(f) { !f.required || ref_uses_option(f.type_ref) })
+      ir.AliasType(_, ref, _) -> ref_uses_option(ref)
+      ir.UnionType(_, members, _, _) -> list.any(members, ref_uses_option)
+      ir.EnumType(..) -> False
+    }
+  })
+}
+
+fn ref_uses_option(ref: ir.TypeRef) -> Bool {
+  case ref {
+    ir.Nullable(_) | ir.Optional(_) -> True
+    ir.Array(item) -> ref_uses_option(item)
+    ir.Dict(k, v) -> ref_uses_option(k) || ref_uses_option(v)
+    _ -> False
   }
 }
 
