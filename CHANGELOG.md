@@ -1,5 +1,70 @@
 # Changelog
 
+## v1.2.0 - 2026-08-05
+
+### Changed
+
+- **Breaking.** Path and header parameters now carry the type declared in the
+  spec instead of always being `String`. A `type: integer` path parameter used
+  to generate `fn(config: ClientConfig, pet_id: String)` and is now
+  `pet_id: Int`, so callers passing a string need updating. Values are
+  converted at the call site (`int.to_string`, `float.to_string`, and the
+  generated `<type>_to_string` for enums).
+- **Breaking.** Specs with no schemas no longer emit a `types` module. It held
+  nothing but a header comment and the compiler warns about an empty module, so
+  such a spec now generates three files rather than four. Remove any
+  `import your_app/generated/types` for those specs.
+- Generated enum members are prefixed with their type name. `LoanStatus` with
+  values `active`/`cancelled` now yields `LoanStatusActive`/`LoanStatusCancelled`
+  rather than `active`/`cancelled`. The previous names were not valid Gleam, so
+  no working code depended on them.
+- Schema names are sanitised into valid Gleam type names. `Order_Item` becomes
+  `OrderItem`, `order-summary` becomes `OrderSummary`, and a leading digit takes
+  a `Schema` prefix (`2fa_mode` -> `Schema2faMode`). The previous names did not
+  parse.
+
+### Fixed
+
+- Numeric validation keywords (`minimum`, `maximum`, `multipleOf`,
+  `exclusiveMinimum`, `exclusiveMaximum`) made the whole document fail to
+  decode. taffy renders YAML numbers as ints, and the OpenAPI 3.0 boolean form
+  of the exclusive bounds now decodes to `None` instead of erroring. (#22)
+- Enum members with lowercase values, punctuation, leading digits, or names
+  shared between two enums generated invalid or colliding constructors. Values
+  that sanitise to nothing (`+`, `-`) take a positional suffix. (#18)
+- `decode.failure` was handed the enum type rather than one of its values, so
+  no spec containing an enum produced a compiling types module. (#19)
+- `$ref`d parameters, request bodies, and responses were silently dropped,
+  which removed path parameters from `Route` variants and handler types while
+  still compiling. All three now resolve through a shared component resolver
+  with a bounded depth so a reference cycle cannot hang codegen. (#23)
+- Output directories outside `src/` put an absolute filesystem path inside a
+  generated `import`. `src/generated` also resolved to the module path
+  `src/generated`. Unknowable roots now fall back to the comment hint.
+- A schema named `Error` generated a constructor that shadowed the prelude's,
+  breaking every enum helper. The types module now qualifies `gleam.Ok` and
+  `gleam.Error`.
+- Enum-typed path, query, and header parameters were passed where a `String`
+  was expected.
+- Parameter names containing separators produced invalid identifiers;
+  `X-Status` became `x-_status`.
+- Optional header parameters are skipped when absent instead of being passed
+  as an `Option`.
+- Generated clients imported `gleam/string` for endpoints with no path
+  parameters, where nothing used it.
+
+### Internal
+
+- `to_snake_case` and `to_pascal_case` existed as five per-generator copies that
+  only happened to agree. Type names become cross-module calls such as
+  `types.<name>_decoder()`, so any drift generated a call to a function that was
+  never emitted. Both now live in `nori/codegen/naming`.
+- Added `test/compile_check_test.gleam`, which writes generated modules into a
+  scratch project and runs `gleam build` on them. Codegen tests only compared
+  strings, so output that was well-formed text but not valid Gleam was
+  invisible; this found most of the codegen bugs above. It needs the `gleam`
+  binary on PATH and network on the first run.
+
 ## v1.1.1 - 2026-05-23
 
 ### Changed
