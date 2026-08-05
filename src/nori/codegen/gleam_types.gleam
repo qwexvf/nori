@@ -13,6 +13,7 @@ import nori/codegen/ir.{
   Optional, PBinary, PBool, PDate, PDateTime, PFloat, PInt, PString, PUnit,
   Primitive, RecordType, UnionType, Unknown,
 }
+import nori/codegen/naming
 
 /// Generates a complete Gleam module string from the CodegenIR.
 pub fn generate(ir: CodegenIR) -> String {
@@ -35,37 +36,9 @@ pub fn generate(ir: CodegenIR) -> String {
   string.join([header, "", type_defs, "", decoders, "", encoders, ""], "\n")
 }
 
-/// Convert a PascalCase or camelCase string to snake_case.
+/// Convert a name to snake_case. See `naming.to_snake_case`.
 pub fn to_snake_case(name: String) -> String {
-  name
-  |> string.to_graphemes
-  |> do_snake_case([], True)
-  |> list.reverse
-  |> string.join("")
-  |> string.lowercase
-}
-
-fn do_snake_case(
-  chars: List(String),
-  acc: List(String),
-  is_start: Bool,
-) -> List(String) {
-  case chars {
-    [] -> acc
-    [c, ..rest] -> {
-      case is_upper(c), is_start {
-        True, True -> do_snake_case(rest, [string.lowercase(c), ..acc], False)
-        True, False ->
-          do_snake_case(rest, [string.lowercase(c), "_", ..acc], False)
-        False, _ -> do_snake_case(rest, [c, ..acc], False)
-      }
-    }
-  }
-}
-
-fn is_upper(c: String) -> Bool {
-  let upper = string.uppercase(c)
-  c == upper && c != string.lowercase(c)
+  naming.to_snake_case(name)
 }
 
 // ---------------------------------------------------------------------------
@@ -80,27 +53,44 @@ fn generate_header(ir: CodegenIR) -> String {
   case ir.types {
     [] -> title_comment
     _ -> {
-      let needs_dynamic = uses_unknown(ir)
-      let lines = case needs_dynamic {
-        True -> [
-          title_comment,
-          "",
-          "import gleam/dynamic.{type Dynamic}",
-          "import gleam/dynamic/decode.{type Decoder}",
-          "import gleam/json.{type Json}",
-          "import gleam/option.{type Option, None, Some}",
-        ]
-        False -> [
-          title_comment,
-          "",
-          "import gleam/dynamic/decode.{type Decoder}",
-          "import gleam/json.{type Json}",
-          "import gleam/option.{type Option, None, Some}",
-        ]
+      let dynamic_import = case uses_unknown(ir) {
+        True -> ["import gleam/dynamic.{type Dynamic}"]
+        False -> []
       }
+      // A schema named "Error" generates a constructor that shadows the
+      // prelude's, which breaks the Result(_, Nil) the enum helpers return.
+      // Importing the prelude lets those helpers say gleam.Error explicitly.
+      let prelude_import = case has_enum(ir) {
+        True -> ["import gleam"]
+        False -> []
+      }
+      let lines =
+        list.flatten([
+          [title_comment, ""],
+          prelude_import,
+          dynamic_import,
+          [
+            "import gleam/dynamic/decode.{type Decoder}",
+            "import gleam/json.{type Json}",
+            "import gleam/option.{type Option, None, Some}",
+          ],
+        ])
       string.join(lines, "\n")
     }
   }
+}
+
+/// Only enums emit the prelude-qualified Result constructors.
+fn has_enum(ir: CodegenIR) -> Bool {
+  list.any(ir.types, fn(td) {
+    case td {
+      // Any enum at all: from_string emits gleam.Error(Nil) even with no
+      // variants, so gating on a non-empty variant list would reference the
+      // prelude without importing it.
+      ir.EnumType(..) -> True
+      _ -> False
+    }
+  })
 }
 
 fn uses_unknown(ir: CodegenIR) -> Bool {
@@ -248,7 +238,9 @@ fn generate_enum_from_string(
   let fn_name = to_snake_case(name) <> "_from_string"
   let cases =
     variants
-    |> list.map(fn(v) { "    \"" <> v.value <> "\" -> Ok(" <> v.name <> ")" })
+    |> list.map(fn(v) {
+      "    \"" <> v.value <> "\" -> gleam.Ok(" <> v.name <> ")"
+    })
     |> string.join("\n")
 
   "pub fn "
@@ -257,7 +249,7 @@ fn generate_enum_from_string(
   <> name
   <> ", Nil) {\n  case value {\n"
   <> cases
-  <> "\n    _ -> Error(Nil)\n  }\n}"
+  <> "\n    _ -> gleam.Error(Nil)\n  }\n}"
 }
 
 fn generate_enum_to_string(name: String, variants: List(EnumVariant)) -> String {
@@ -315,7 +307,7 @@ fn generate_alias_type(
 fn generate_decoder(typedef: TypeDef) -> String {
   case typedef {
     RecordType(name, fields, _) -> generate_record_decoder(name, fields)
-    EnumType(name, _variants, _) -> generate_enum_decoder(name)
+    EnumType(name, variants, _) -> generate_enum_decoder(name, variants)
     UnionType(..) -> ""
     AliasType(..) -> ""
   }
@@ -395,26 +387,32 @@ fn primitive_decoder(p: PrimitiveType) -> String {
   }
 }
 
-fn generate_enum_decoder(name: String) -> String {
-  let fn_name = to_snake_case(name) <> "_decoder"
-  let from_fn = to_snake_case(name) <> "_from_string"
+fn generate_enum_decoder(name: String, variants: List(EnumVariant)) -> String {
+  case variants {
+    [] -> ""
+    [first, ..] -> {
+      let fn_name = to_snake_case(name) <> "_decoder"
+      let from_fn = to_snake_case(name) <> "_from_string"
 
-  "pub fn "
-  <> fn_name
-  <> "() -> Decoder("
-  <> name
-  <> ") {\n"
-  <> "  use value <- decode.then(decode.string)\n"
-  <> "  case "
-  <> from_fn
-  <> "(value) {\n"
-  <> "    Ok(variant) -> decode.success(variant)\n"
-  <> "    Error(_) -> decode.failure("
-  <> name
-  <> ", \""
-  <> name
-  <> "\")\n"
-  <> "  }\n}"
+      "pub fn "
+      <> fn_name
+      <> "() -> Decoder("
+      <> name
+      <> ") {\n"
+      <> "  use value <- decode.then(decode.string)\n"
+      <> "  case "
+      <> from_fn
+      <> "(value) {\n"
+      <> "    gleam.Ok(variant) -> decode.success(variant)\n"
+      // decode.failure needs a zero value of the type, not the type itself
+      <> "    gleam.Error(_) -> decode.failure("
+      <> first.name
+      <> ", \""
+      <> name
+      <> "\")\n"
+      <> "  }\n}"
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

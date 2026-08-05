@@ -10,6 +10,7 @@ import gleam/string
 import nori/codegen/ir.{
   type CodegenIR, type Endpoint, Delete, Get, Patch, Post, Put,
 }
+import nori/codegen/naming
 
 /// Generates a complete Gleam wisp adapter module string from the CodegenIR.
 pub fn generate(ir: CodegenIR) -> String {
@@ -174,34 +175,7 @@ fn method_to_pattern(method: ir.HttpMethod) -> String {
 // String helpers
 // ---------------------------------------------------------------------------
 
+/// Convert a name to snake_case. See `naming.to_snake_case`.
 fn to_snake_case(name: String) -> String {
-  name
-  |> string.to_graphemes
-  |> do_snake_case([], True)
-  |> list.reverse
-  |> string.join("")
-  |> string.lowercase
-}
-
-fn do_snake_case(
-  chars: List(String),
-  acc: List(String),
-  is_start: Bool,
-) -> List(String) {
-  case chars {
-    [] -> acc
-    [c, ..rest] -> {
-      case is_upper(c), is_start {
-        True, True -> do_snake_case(rest, [string.lowercase(c), ..acc], False)
-        True, False ->
-          do_snake_case(rest, [string.lowercase(c), "_", ..acc], False)
-        False, _ -> do_snake_case(rest, [c, ..acc], False)
-      }
-    }
-  }
-}
-
-fn is_upper(c: String) -> Bool {
-  let upper = string.uppercase(c)
-  c == upper && c != string.lowercase(c)
+  naming.to_snake_case(name)
 }

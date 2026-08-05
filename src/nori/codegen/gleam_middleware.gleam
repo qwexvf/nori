@@ -11,6 +11,7 @@ import nori/codegen/ir.{
   type CodegenIR, type SecuritySchemeIR, ApiKeyAuth, BasicAuth, BearerAuth,
   InCookie, InHeader, InQuery, OAuth2Auth, OpenIdConnectAuth,
 }
+import nori/codegen/naming
 
 /// Generates a complete Gleam middleware module string from the CodegenIR.
 ///
@@ -791,48 +792,12 @@ fn generate_helpers() -> String {
 // String case helpers
 // ---------------------------------------------------------------------------
 
-fn to_snake_case(name: String) -> String {
-  name
-  |> string.to_graphemes
-  |> do_snake_case([], True)
-  |> list.reverse
-  |> string.join("")
-  |> string.lowercase
-}
-
-fn do_snake_case(
-  chars: List(String),
-  acc: List(String),
-  is_start: Bool,
-) -> List(String) {
-  case chars {
-    [] -> acc
-    [c, ..rest] -> {
-      case is_upper(c), is_start {
-        True, True -> do_snake_case(rest, [string.lowercase(c), ..acc], False)
-        True, False ->
-          do_snake_case(rest, [string.lowercase(c), "_", ..acc], False)
-        False, _ -> do_snake_case(rest, [c, ..acc], False)
-      }
-    }
-  }
-}
-
+/// Convert a name to PascalCase. See `naming.to_pascal_case`.
 fn to_pascal_case(name: String) -> String {
-  name
-  |> string.split("_")
-  |> list.map(capitalize)
-  |> string.join("")
+  naming.to_pascal_case(name)
 }
 
-fn capitalize(s: String) -> String {
-  case string.pop_grapheme(s) {
-    Ok(#(first, rest)) -> string.uppercase(first) <> rest
-    Error(_) -> s
-  }
-}
-
-fn is_upper(c: String) -> Bool {
-  let upper = string.uppercase(c)
-  c == upper && c != string.lowercase(c)
+/// Convert a name to snake_case. See `naming.to_snake_case`.
+fn to_snake_case(name: String) -> String {
+  naming.to_snake_case(name)
 }

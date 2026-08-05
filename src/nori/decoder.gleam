@@ -5,6 +5,7 @@
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode.{type DecodeError, type Decoder}
+import gleam/int
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -102,6 +103,22 @@ pub fn document_decoder() -> Decoder(Document) {
 /// Helper to wrap a decoder result in Some.
 fn option_decoder(decoder: Decoder(a)) -> Decoder(Option(a)) {
   decode.map(decoder, Some)
+}
+
+/// Decodes a JSON number as a Float, tolerating an integer encoding.
+/// taffy renders YAML `1` (and `1.0`) as a JSON int, so `decode.float`
+/// alone rejects perfectly valid numeric bounds.
+fn number_decoder() -> Decoder(Float) {
+  decode.one_of(decode.float, [decode.map(decode.int, int.to_float)])
+}
+
+/// OpenAPI 3.1 spells exclusiveMinimum/exclusiveMaximum as numbers, 3.0 as
+/// booleans. Accept both; the boolean form carries no bound of its own so it
+/// decodes to None rather than failing the whole document.
+fn exclusive_bound_decoder() -> Decoder(Option(Float)) {
+  decode.one_of(decode.map(number_decoder(), Some), [
+    decode.map(decode.bool, fn(_) { None }),
+  ])
 }
 
 /// Decoder for OpenAPI version strings.
@@ -671,27 +688,27 @@ fn schema_decoder() -> Decoder(Schema) {
   use multiple_of <- decode.optional_field(
     "multipleOf",
     None,
-    option_decoder(decode.float),
+    option_decoder(number_decoder()),
   )
   use maximum <- decode.optional_field(
     "maximum",
     None,
-    option_decoder(decode.float),
+    option_decoder(number_decoder()),
   )
   use exclusive_maximum <- decode.optional_field(
     "exclusiveMaximum",
     None,
-    option_decoder(decode.float),
+    exclusive_bound_decoder(),
   )
   use minimum <- decode.optional_field(
     "minimum",
     None,
-    option_decoder(decode.float),
+    option_decoder(number_decoder()),
   )
   use exclusive_minimum <- decode.optional_field(
     "exclusiveMinimum",
     None,
-    option_decoder(decode.float),
+    exclusive_bound_decoder(),
   )
   // Validation vocabulary - string
   use max_length <- decode.optional_field(
