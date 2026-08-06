@@ -1,3 +1,4 @@
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
@@ -710,4 +711,56 @@ fn empty_ir() -> CodegenIR {
     security_schemes: [],
     global_security: [],
   )
+}
+
+pub fn multi_line_descriptions_are_valid_doc_comments_test() {
+  // ⚠️ A YAML block scalar is an ordinary way to write a description. Prefixing
+  // only the first line left the rest as bare text and the module did not parse.
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Docs
+  version: '1.0.0'
+paths:
+  /a:
+    get:
+      operationId: getA
+      responses:
+        '204':
+          description: OK
+components:
+  schemas:
+    Settings:
+      type: object
+      description: |
+        First line of the description.
+
+        Third line, after a blank one.
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = gleam_types.generate(ir_builder.build(doc))
+
+  output
+  |> string.contains("/// First line of the description.")
+  |> should.be_true
+  // The blank line between them is `///`, not an empty line that would end the
+  // comment and leave the rest as code.
+  output
+  |> string.contains("/// First line of the description.\n///\n/// Third line")
+  |> should.be_true
+
+  // No line of the description escaped the prefix.
+  output
+  |> string.split("\n")
+  |> list.filter(fn(line) { string.contains(line, "Third line") })
+  |> list.all(fn(line) { string.starts_with(string.trim(line), "///") })
+  |> should.be_true
+
+  // And a trailing blank line in the block scalar leaves no stray `///`.
+  output |> string.contains("///\npub type") |> should.be_false
 }
