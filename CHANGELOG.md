@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.4.2 - 2026-08-06
+
+### Fixed
+
+- A multi-line `description` on a schema, operation or field emitted a doc
+  comment where only the first line carried `///`. Every line after it was bare
+  text, so the generated module did not parse — and a YAML block scalar is an
+  ordinary way to write a description. Blank lines inside one become `///`, and a
+  trailing blank line no longer leaves a stray `///` before the declaration.
+
 ## v1.4.1 - 2026-08-06
 
 ### Fixed

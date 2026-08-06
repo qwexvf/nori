@@ -179,3 +179,37 @@ fn is_identifier_char(c: String) -> Bool {
     _ -> False
   }
 }
+
+/// A description as a Gleam doc comment, one `///` per line.
+///
+/// ⚠️ Prefixing only the first line leaves the rest as bare text, and the
+/// generated module does not parse — a spec is free to use a YAML block scalar
+/// for a description, and several do. Trailing blank lines are dropped so the
+/// comment does not end with a stray `///`.
+pub fn doc_comment(description: String) -> String {
+  description
+  |> string.replace("\r\n", "\n")
+  |> string.split("\n")
+  |> list.reverse
+  |> drop_leading_blanks
+  |> list.reverse
+  |> list.map(fn(line) {
+    case string.trim(line) {
+      "" -> "///"
+      _ -> "/// " <> line
+    }
+  })
+  |> string.join("\n")
+  |> fn(comment) { comment <> "\n" }
+}
+
+fn drop_leading_blanks(lines: List(String)) -> List(String) {
+  case lines {
+    [first, ..rest] ->
+      case string.trim(first) {
+        "" -> drop_leading_blanks(rest)
+        _ -> lines
+      }
+    [] -> []
+  }
+}

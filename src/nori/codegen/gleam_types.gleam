@@ -204,7 +204,7 @@ fn generate_record_type(
   description: Option(String),
 ) -> String {
   let doc = case description {
-    Some(d) -> "/// " <> d <> "\n"
+    Some(d) -> naming.doc_comment(d)
     None -> ""
   }
   let field_strs =
@@ -238,7 +238,7 @@ fn generate_enum_type(
   description: Option(String),
 ) -> String {
   let doc = case description {
-    Some(d) -> "/// " <> d <> "\n"
+    Some(d) -> naming.doc_comment(d)
     None -> ""
   }
   let variant_strs =
@@ -304,7 +304,7 @@ fn generate_union_type(
   description: Option(String),
 ) -> String {
   let doc = case description {
-    Some(d) -> "/// " <> d <> "\n"
+    Some(d) -> naming.doc_comment(d)
     None -> ""
   }
   let variant_strs =
@@ -324,7 +324,7 @@ fn generate_alias_type(
   description: Option(String),
 ) -> String {
   let doc = case description {
-    Some(d) -> "/// " <> d <> "\n"
+    Some(d) -> naming.doc_comment(d)
     None -> ""
   }
   doc <> "pub type " <> name <> " =\n  " <> type_ref_to_string(target)

@@ -396,7 +396,7 @@ fn generate_request_fn(
     build_header_section(header_params, name_prefix, enum_names)
 
   let doc = case endpoint.summary {
-    Some(s) -> "/// " <> s <> "\n"
+    Some(s) -> naming.doc_comment(s)
     None -> ""
   }
 
