@@ -283,19 +283,16 @@ fn generate_handler_types(endpoints: List(Endpoint)) -> String {
     let path_params =
       ep.parameters
       |> list.filter(fn(p) { p.location == ir.PathParam })
-    let param_types = case path_params {
-      [] -> ""
-      params -> {
-        params
-        |> list.map(fn(_p) { "String" })
-        |> string.join(", ")
-        |> fn(s) { s <> ", " }
-      }
-    }
+    // Joined, not each-suffixed: appending ", " per group emitted
+    // `fn(LoginRequest, ) -> …` for a body with no path parameters, which is a
+    // trailing comma in a type the consumer reads but cannot edit.
+    let param_types = list.map(path_params, fn(_p) { "String" })
     let request_type = case ep.request_body {
-      Some(body) -> type_ref_to_string(body.type_ref) <> ", "
-      None -> ""
+      Some(body) -> [type_ref_to_string(body.type_ref)]
+      None -> []
     }
+    let handler_args =
+      list.append(param_types, request_type) |> string.join(", ")
     let response_type = get_success_response_type(ep)
 
     "/// Handler type for "
@@ -305,8 +302,7 @@ fn generate_handler_types(endpoints: List(Endpoint)) -> String {
     <> to_pascal_case(ep.operation_id)
     <> "Handler =\n"
     <> "  fn("
-    <> param_types
-    <> request_type
+    <> handler_args
     <> ") -> Result("
     <> response_type
     <> ", String)"

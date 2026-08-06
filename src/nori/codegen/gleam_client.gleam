@@ -63,10 +63,14 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
             None -> []
           }
         })
-      // Params count too: an enum-typed one calls types.<name>_to_string.
+      // ⚠️ Enum-typed params only, and only because they call
+      // types.<name>_to_string. A record-typed param is accepted as a String
+      // (see `param_type`), so counting it here imported a module the generated
+      // code never mentions.
       let param_types =
         ep.parameters
         |> list.flat_map(fn(p) { collect_named_types(p.type_ref) })
+        |> list.filter(fn(name) { list.contains(enum_type_names(ir), name) })
       list.flatten([body_types, response_types, param_types])
     })
     |> list.unique
@@ -146,6 +150,13 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
       })
     })
 
+  // json.to_string encodes a request body and json.parse reads a response; a
+  // spec of 204s does neither, and an unused import is a warning in a file the
+  // consumer is told not to edit.
+  let needs_json =
+    needs_decode
+    || list.any(ir.endpoints, fn(ep) { option.is_some(ep.request_body) })
+
   // Option appears in signatures via Nullable/Optional wraps OR optional query
   // params (where each `option.Some(v) -> ...` pattern requires the module).
   let needs_option =
@@ -194,7 +205,7 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
   let optional_imports = [
     #(needs_dynamic, "import gleam/dynamic.{type Dynamic}"),
     #(needs_decode, "import gleam/dynamic/decode"),
-    #(True, "import gleam/json"),
+    #(needs_json, "import gleam/json"),
     #(needs_option, "import gleam/option.{type Option}"),
     #(needs_int, "import gleam/int"),
     #(needs_float, "import gleam/float"),
@@ -332,6 +343,8 @@ fn generate_request_fn(
     |> list.filter(fn(p) { p.location == ir.HeaderParam })
 
   // Build function parameters
+  let locals = build_locals(endpoint)
+
   let param_args =
     build_param_args(
       path_params,
@@ -339,10 +352,10 @@ fn generate_request_fn(
       header_params,
       endpoint.request_body,
       name_prefix,
+      enum_names,
+      locals,
     )
-  let all_args = "config: ClientConfig" <> param_args
-
-  let locals = build_locals(endpoint)
+  let all_args = locals.config <> ": ClientConfig" <> param_args
 
   // Build path with substitution
   let path_expr =
@@ -371,7 +384,8 @@ fn generate_request_fn(
   // Build request body
   let body_section = case endpoint.request_body {
     Some(body) -> {
-      let encoder = type_ref_encoder_call("body", body.type_ref, name_prefix)
+      let encoder =
+        type_ref_encoder_call(locals.body, body.type_ref, name_prefix)
       "\n  |> request.set_body(json.to_string(" <> encoder <> "))"
     }
     None -> ""
@@ -409,12 +423,16 @@ fn generate_request_fn(
   <> "  |> request.set_method("
   <> method_str
   <> ")\n"
-  <> "  |> request.set_host(config.base_url)\n"
+  <> "  |> request.set_host("
+  <> locals.config
+  <> ".base_url)\n"
   <> "  |> request.set_path("
   <> locals.path
   <> ")\n"
   <> "  |> fn(req) {\n"
-  <> "    list.fold(config.headers, req, fn(r, h) {\n"
+  <> "    list.fold("
+  <> locals.config
+  <> ".headers, req, fn(r, h) {\n"
   <> "      request.set_header(r, h.0, h.1)\n"
   <> "    })\n"
   <> "  }\n"
@@ -481,6 +499,8 @@ fn build_param_args(
   header_params: List(EndpointParam),
   body: option.Option(ir.RequestBodyIR),
   name_prefix: String,
+  enum_names: List(String),
+  locals: Locals,
 ) -> String {
   // Path params are always required, so no Option wrap.
   let path_args =
@@ -489,32 +509,51 @@ fn build_param_args(
       ", "
       <> to_snake_case(p.name)
       <> ": "
-      <> type_ref_to_string(p.type_ref, name_prefix)
+      <> param_type(p.type_ref, name_prefix, enum_names)
     })
-  let query_args =
-    query_params
-    |> list.map(fn(p) {
-      let type_str = case p.required {
-        True -> type_ref_to_string(p.type_ref, name_prefix)
-        False -> "Option(" <> type_ref_to_string(p.type_ref, name_prefix) <> ")"
-      }
-      ", " <> to_snake_case(p.name) <> ": " <> type_str
-    })
-  let header_args =
-    header_params
-    |> list.map(fn(p) {
-      let type_str = case p.required {
-        True -> type_ref_to_string(p.type_ref, name_prefix)
-        False -> "Option(" <> type_ref_to_string(p.type_ref, name_prefix) <> ")"
-      }
-      ", " <> to_snake_case(p.name) <> ": " <> type_str
-    })
+  let optional_arg = fn(p: EndpointParam) {
+    let type_str = case p.required {
+      True -> param_type(p.type_ref, name_prefix, enum_names)
+      False ->
+        "Option(" <> param_type(p.type_ref, name_prefix, enum_names) <> ")"
+    }
+    ", " <> to_snake_case(p.name) <> ": " <> type_str
+  }
   let body_arg = case body {
-    Some(b) -> [", body: " <> type_ref_to_string(b.type_ref, name_prefix)]
+    Some(b) -> [
+      ", " <> locals.body <> ": " <> type_ref_to_string(b.type_ref, name_prefix),
+    ]
     None -> []
   }
-  list.flatten([path_args, query_args, header_args, body_arg])
+  list.flatten([
+    path_args,
+    list.map(query_params, optional_arg),
+    list.map(header_params, optional_arg),
+    body_arg,
+  ])
   |> string.join("")
+}
+
+/// The Gleam type a parameter is accepted as.
+///
+/// ⚠️ A named type that is not an enum becomes `String`. Path, query and header
+/// values are all stringified, and only enums get a generated `<name>_to_string`
+/// — naming a record here produced a signature whose value could not be
+/// stringified, so the generated client did not compile. Matches what the query
+/// readers in `routes.gleam` do with the same shape.
+fn param_type(
+  ref: TypeRef,
+  name_prefix: String,
+  enum_names: List(String),
+) -> String {
+  case ir.strip_optional(ref) {
+    Named(name) ->
+      case list.contains(enum_names, name) {
+        True -> type_ref_to_string(ref, name_prefix)
+        False -> "String"
+      }
+    _ -> type_ref_to_string(ref, name_prefix)
+  }
 }
 
 fn build_path_expr(
@@ -686,7 +725,18 @@ fn build_query_section(
 /// function did not compile. Each name gets trailing underscores until it
 /// cannot collide with a parameter of this endpoint.
 type Locals {
-  Locals(path: String, query: String, query_string: String, value: String)
+  Locals(
+    path: String,
+    query: String,
+    query_string: String,
+    value: String,
+    /// The `config: ClientConfig` argument. A path or query parameter named
+    /// `config` collides with it in the signature itself — "Argument name
+    /// already used" — so it is renamed too, not just the locals.
+    config: String,
+    /// Same for the request body argument.
+    body: String,
+  )
 }
 
 fn build_locals(endpoint: Endpoint) -> Locals {
@@ -699,6 +749,8 @@ fn build_locals(endpoint: Endpoint) -> Locals {
     query: fresh_name("query", taken),
     query_string: fresh_name("query_string", taken),
     value: fresh_name("v", taken),
+    config: fresh_name("config", taken),
+    body: fresh_name("body", taken),
   )
 }
 
