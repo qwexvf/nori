@@ -657,3 +657,130 @@ paths:
 
   ir |> should_compile
 }
+
+/// A parameter typed by a `$ref`'d object has no `<name>_to_string`, and one
+/// named `config` or `body` collides with the client's fixed arguments. Both
+/// used to produce a client that did not compile.
+pub fn awkward_param_names_and_types_output_compiles_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Awkward
+  version: '1.0.0'
+paths:
+  /a/{config}:
+    post:
+      operationId: postA
+      parameters:
+        - name: config
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: filter
+          in: query
+          schema:
+            $ref: '#/components/schemas/Filter'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Filter'
+      responses:
+        '204':
+          description: OK
+  /b:
+    get:
+      operationId: getB
+      parameters:
+        - name: body
+          in: query
+          schema:
+            type: string
+      responses:
+        '204':
+          description: OK
+components:
+  schemas:
+    Filter:
+      type: object
+      properties:
+        name:
+          type: string"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  ir_builder.build(doc) |> should_compile
+}
+
+/// A spec of 204s encodes nothing and decodes nothing, so the client must not
+/// import gleam/json — nor the types module, now that a record-typed parameter
+/// is accepted as a String.
+pub fn client_imports_nothing_it_does_not_use_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Bare
+  version: '1.0.0'
+paths:
+  /a:
+    get:
+      operationId: getA
+      parameters:
+        - name: filter
+          in: query
+          schema:
+            $ref: '#/components/schemas/Filter'
+      responses:
+        '204':
+          description: OK
+components:
+  schemas:
+    Filter:
+      type: object
+      properties:
+        name:
+          type: string"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let ir = ir_builder.build(doc)
+  let output = gleam_client.generate(ir, "generated")
+
+  output |> string.contains("import gleam/json") |> should.be_false
+  output |> string.contains("import generated/types") |> should.be_false
+  // The parameter is accepted as text, since only enums get a _to_string.
+  output |> string.contains("filter: Option(String)") |> should.be_true
+
+  ir |> should_compile
+}
+
+/// A handler type with a body but no path parameters used to read
+/// `fn(LoginRequest, ) -> …`.
+pub fn handler_types_have_no_trailing_comma_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Handler
+  version: '1.0.0'
+paths:
+  /login:
+    post:
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: string
+      responses:
+        '204':
+          description: OK"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = gleam_routes.generate(ir_builder.build(doc), "generated")
+
+  output |> string.contains(", )") |> should.be_false
+  output
+  |> string.contains("fn(String) -> Result(Nil, String)")
+  |> should.be_true
+}

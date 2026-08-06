@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.4.1 - 2026-08-06
+
+### Fixed
+
+- A query, path or header parameter typed by a `$ref`'d **object** made the
+  generated client fail to compile: the signature named the record, but only
+  enums get a generated `<name>_to_string`, so the value could not be
+  stringified. Such a parameter is now accepted as a `String`, matching what the
+  query readers in `routes.gleam` already did with the same shape.
+- A parameter named `config` or `body` collided with the client's fixed
+  arguments — "Argument name already used" in the signature itself. Both now go
+  through the same collision rename as the other generated names, so `config`
+  becomes `config_` only when a parameter claims the name.
+- The generated client imported `gleam/json` unconditionally and the types
+  module whenever any parameter named a schema. A spec of 204s encodes and
+  decodes nothing, and a record-typed parameter is a `String`, so both were
+  unused imports in a file the consumer is told not to edit.
+- Handler types with a request body but no path parameters read
+  `fn(LoginRequest, ) -> …`.
+
 ## v1.4.0 - 2026-08-06
 
 ### Added
