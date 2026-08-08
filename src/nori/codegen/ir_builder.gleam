@@ -69,7 +69,7 @@ fn build_types(doc: Document) -> List(ir.TypeDef) {
   }
 }
 
-fn schema_to_typedef(name: String, s: Schema) -> ir.TypeDef {
+pub fn schema_to_typedef(name: String, s: Schema) -> ir.TypeDef {
   // Check for enum
   case s.enum_values {
     option.Some(values) -> {
@@ -214,7 +214,7 @@ fn build_union_type(
 // Schema type → TypeRef mapping
 // ---------------------------------------------------------------------------
 
-fn schema_type_to_typeref(s: Schema) -> ir.TypeRef {
+pub fn schema_type_to_typeref(s: Schema) -> ir.TypeRef {
   // Check for $ref in the schema itself
   case s.ref {
     option.Some(ref_str) -> ref_to_typeref(ref_str)

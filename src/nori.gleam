@@ -43,11 +43,12 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/string_tree
 import nori/capability.{type Issue}
-import nori/codegen/ir.{type CodegenIR}
+import nori/codegen/ir.{type CodegenIR, type TypeDef, type TypeRef}
 import nori/codegen/ir_builder
 import nori/decoder
 import nori/document.{type Document}
 import nori/encoder
+import nori/schema.{type Schema}
 import nori/yaml as nori_yaml
 
 /// Error types for parsing OpenAPI documents.
@@ -193,4 +194,35 @@ pub fn check_capabilities(doc: Document) -> Result(Document, List(Issue)) {
 /// ```
 pub fn build_ir(doc: Document) -> CodegenIR {
   ir_builder.build(doc)
+}
+
+/// Decode a single JSON Schema fragment into nori's `Schema` type.
+///
+/// Stable seam for satellite generators (e.g. AsyncAPI) that carry their own
+/// spec structure but whose payloads are plain JSON Schema. Feed the decoded
+/// `Schema` to `schema_to_typedef` / `schema_to_typeref` to reach the IR.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(dyn) = json.parse(payload_json, decode.dynamic)
+/// let assert Ok(s) = nori.parse_schema(dyn)
+/// ```
+pub fn parse_schema(
+  dyn: decode.Dynamic,
+) -> Result(Schema, List(decode.DecodeError)) {
+  decode.run(dyn, decoder.schema_decoder())
+}
+
+/// Convert a named `Schema` into a codegen `TypeDef` — the same record / enum /
+/// union / alias the built-in generators consume. Use for top-level named
+/// schemas (message payloads, component schemas).
+pub fn schema_to_typedef(name: String, s: Schema) -> TypeDef {
+  ir_builder.schema_to_typedef(name, s)
+}
+
+/// Convert a `Schema` into a `TypeRef` — the field-level reference form (named
+/// ref, primitive, array, nullable, …). Use for inline / property schemas.
+pub fn schema_to_typeref(s: Schema) -> TypeRef {
+  ir_builder.schema_type_to_typeref(s)
 }

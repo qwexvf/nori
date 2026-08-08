@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.5.0 - 2026-08-08
+
+### Added
+
+- Public schema seam for satellite generators (e.g. `nori_asyncapi`): whose
+  payloads are plain JSON Schema but which carry their own spec structure.
+  - `nori.parse_schema(Dynamic) -> Result(Schema, _)` — decode a single JSON
+    Schema fragment.
+  - `nori.schema_to_typedef(name, Schema) -> TypeDef` — a named schema to the
+    codegen record/enum/union/alias.
+  - `nori.schema_to_typeref(Schema) -> TypeRef` — a schema to the field-level
+    type reference.
+  These delegate to the same internal decoder and IR builder the built-in
+  generators use, so satellites reuse the schema engine instead of duplicating
+  it. The internals stay private.
+
 ## v1.4.2 - 2026-08-06
 
 ### Fixed
