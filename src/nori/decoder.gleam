@@ -544,7 +544,7 @@ fn schema_or_ref_decoder() -> Decoder(Ref(Schema)) {
 }
 
 /// Decoder for Schema objects.
-fn schema_decoder() -> Decoder(Schema) {
+pub fn schema_decoder() -> Decoder(Schema) {
   // Core vocabulary
   use schema_uri <- decode.optional_field(
     "$schema",
