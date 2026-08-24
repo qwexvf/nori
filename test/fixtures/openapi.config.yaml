@@ -12,5 +12,3 @@ output:
     enabled: false
   swr:
     enabled: false
-  fetch:
-    enabled: false
