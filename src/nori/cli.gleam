@@ -7,6 +7,7 @@ import argv
 import gleam/dict
 import gleam/int
 import gleam/io
+import gleam/json
 import gleam/list
 import gleam/pair
 import gleam/result
@@ -37,9 +38,46 @@ import simplifile
 @external(javascript, "./cli_ffi.mjs", "halt")
 fn halt(code: Int) -> a
 
+/// Read the whole of standard input as a string (used for `--spec=-`).
+@external(erlang, "cli_ffi", "read_stdin")
+@external(javascript, "./cli_ffi.mjs", "read_stdin")
+fn read_stdin() -> String
+
 fn fail(message: String) -> a {
   io.println_error(message)
   halt(1)
+}
+
+/// How much the commands print. Errors always print; `Quiet` silences status
+/// lines, `Verbose` adds per-file detail, `Normal` is the summary in between.
+type Verbosity {
+  Quiet
+  Normal
+  Verbose
+}
+
+fn verbosity(quiet: Bool, verbose: Bool) -> Verbosity {
+  case quiet, verbose {
+    True, _ -> Quiet
+    _, True -> Verbose
+    _, _ -> Normal
+  }
+}
+
+/// Print a status line unless `--quiet`.
+fn info(v: Verbosity, message: String) -> Nil {
+  case v {
+    Quiet -> Nil
+    _ -> io.println(message)
+  }
+}
+
+/// Print extra detail only under `--verbose`.
+fn detail(v: Verbosity, message: String) -> Nil {
+  case v {
+    Verbose -> io.println(message)
+    _ -> Nil
+  }
 }
 
 /// Load config: missing file falls back to defaults silently; parse errors
@@ -72,14 +110,12 @@ pub fn main() {
 fn generate_command() -> glint.Command(Nil) {
   use <- glint.command_help(
     "Generate code from an OpenAPI spec.\n\n"
-    <> "Targets: gleam, typescript, react-query, swr, fetch, all",
+    <> "Targets: gleam, typescript, react-query, swr, all",
   )
   use target <- glint.flag(
     glint.string_flag("target")
     |> glint.flag_default("")
-    |> glint.flag_help(
-      "Target: gleam, typescript, react-query, swr, fetch, all",
-    ),
+    |> glint.flag_help("Target: gleam, typescript, react-query, swr, all"),
   )
   use output <- glint.flag(
     glint.string_flag("output")
@@ -103,6 +139,23 @@ fn generate_command() -> glint.Command(Nil) {
       "Generate even if the spec uses capabilities nori does not support yet (output may be incomplete)",
     ),
   )
+  use dry_run <- glint.flag(
+    glint.bool_flag("dry-run")
+    |> glint.flag_default(False)
+    |> glint.flag_help(
+      "Plan the output and list the files without writing them",
+    ),
+  )
+  use quiet <- glint.flag(
+    glint.bool_flag("quiet")
+    |> glint.flag_default(False)
+    |> glint.flag_help("Suppress status output (errors still print)"),
+  )
+  use verbose <- glint.flag(
+    glint.bool_flag("verbose")
+    |> glint.flag_default(False)
+    |> glint.flag_help("Print extra detail, including each file written"),
+  )
   use _named, _unnamed, flags <- glint.command()
 
   let target_val = result.unwrap(target(flags), "")
@@ -110,6 +163,12 @@ fn generate_command() -> glint.Command(Nil) {
   let config_file = result.unwrap(config_path(flags), "nori.config.yaml")
   let spec_override = result.unwrap(spec_arg(flags), "")
   let allow_unsupported_val = result.unwrap(allow_unsupported(flags), False)
+  let dry_run_val = result.unwrap(dry_run(flags), False)
+  let v =
+    verbosity(
+      result.unwrap(quiet(flags), False),
+      result.unwrap(verbose(flags), False),
+    )
 
   let cfg = case load_config(config_file) {
     Ok(c) -> c
@@ -121,44 +180,56 @@ fn generate_command() -> glint.Command(Nil) {
     s -> s
   }
 
-  io.println("Parsing spec: " <> spec)
+  let spec_label = case spec {
+    "-" -> "<stdin>"
+    _ -> spec
+  }
+  info(v, "Parsing spec: " <> spec_label)
 
-  case yaml.parse_file(spec) {
+  let parse_result = case spec {
+    "-" -> yaml.parse_yaml(read_stdin())
+    _ -> yaml.parse_file(spec)
+  }
+
+  case parse_result {
     Error(err) -> {
-      let detail = case err {
+      let reason = case err {
         yaml.FileError(path, msg) -> "File error (" <> path <> "): " <> msg
         yaml.YamlSyntaxError(msg) -> "YAML syntax error: " <> msg
         yaml.YamlDecodeError(_) -> "Failed to decode OpenAPI document"
       }
-      fail("Error: Failed to parse spec file\n  " <> detail)
+      fail("Error: Failed to parse spec\n  " <> reason)
     }
     Ok(doc) -> {
       let proceed = case capability.check(doc) {
         Ok(_) -> True
         Error(issues) -> {
-          io.println("")
-          io.println(
+          info(v, "")
+          info(
+            v,
             "Spec uses "
-            <> int.to_string(list.length(issues))
-            <> " unsupported capabilit"
-            <> case list.length(issues) {
+              <> int.to_string(list.length(issues))
+              <> " unsupported capabilit"
+              <> case list.length(issues) {
               1 -> "y:"
               _ -> "ies:"
             },
           )
           list.each(issues, fn(issue) {
-            io.println(capability.issue_to_string(issue))
+            info(v, capability.issue_to_string(issue))
           })
-          io.println("")
+          info(v, "")
           case allow_unsupported_val {
             True -> {
-              io.println(
+              info(
+                v,
                 "Continuing anyway (--allow-unsupported); generated code may be incomplete.",
               )
               True
             }
             False -> {
-              io.println(
+              // an abort reason must be visible even under --quiet
+              io.println_error(
                 "Aborting. Pass --allow-unsupported to generate with degraded output.",
               )
               False
@@ -170,34 +241,58 @@ fn generate_command() -> glint.Command(Nil) {
       case proceed {
         False -> halt(1)
         True -> {
-          io.println("Building IR...")
+          info(v, "Building IR...")
           let codegen_ir = ir_builder.build(doc)
 
           let files =
             generate_files_from_config(codegen_ir, cfg, target_val, output_dir)
+
+          // TS targets are on the way out — nori is focusing on Gleam (#21).
+          // Warn once when a run would emit them, on stderr so it is seen even
+          // under --quiet.
+          case uses_typescript_target(cfg, target_val) {
+            True ->
+              io.println_error(
+                "Note: TypeScript targets (typescript, react-query, swr) are deprecated "
+                <> "and will be removed in a future release; nori is focusing on Gleam.",
+              )
+            False -> Nil
+          }
 
           // Said once, before the paths scroll past: an unrecognised `dirs` key
           // is silently equivalent to not writing one at all.
           case unknown_dirs_keys(cfg.output.gleam) {
             [] -> Nil
             unknown ->
-              io.println(
+              info(
+                v,
                 "Warning: ignoring unknown output.gleam.dirs key(s): "
-                <> string.join(unknown, ", ")
-                <> "\n  known files: "
-                <> string.join(gleam_file_names, ", "),
+                  <> string.join(unknown, ", ")
+                  <> "\n  known files: "
+                  <> string.join(gleam_file_names, ", "),
               )
           }
 
-          case files {
-            [] -> fail("No files generated. Check your target or config.")
-            _ -> {
-              case write_generated_files(files) {
+          case files, dry_run_val {
+            [], _ -> fail("No files generated. Check your target or config.")
+            _, True -> {
+              // --dry-run: list what would be written, touch nothing
+              info(
+                v,
+                "Dry run — would write "
+                  <> int.to_string(list.length(files))
+                  <> " file(s):",
+              )
+              list.each(files, fn(f) { info(v, "  " <> f.path) })
+            }
+            _, False -> {
+              case write_generated_files(files, v) {
                 Ok(_) ->
-                  io.println(
+                  info(
+                    v,
                     "Generated "
-                    <> int.to_string(list.length(files))
-                    <> " file(s)",
+                      <> int.to_string(list.length(files))
+                      <> " file(s)",
                   )
                 Error(failed) ->
                   fail(
@@ -212,6 +307,19 @@ fn generate_command() -> glint.Command(Nil) {
         }
       }
     }
+  }
+}
+
+/// Whether a run would emit any TypeScript target, given the explicit
+/// `--target` (if any) or the enabled targets in the config for `all`.
+fn uses_typescript_target(cfg: Config, target_override: String) -> Bool {
+  case target_override {
+    "typescript" | "react-query" | "swr" -> True
+    "" | "all" ->
+      cfg.output.typescript.enabled
+      || cfg.output.react_query.enabled
+      || cfg.output.swr.enabled
+    _ -> False
   }
 }
 
@@ -245,17 +353,11 @@ fn generate_files_from_config(
         apply_output_override(cfg.output.swr, output_override),
         apply_output_override(cfg.output.typescript, output_override),
       )
-    "fetch" ->
-      generate_fetch(
-        codegen_ir,
-        apply_output_override(cfg.output.fetch, output_override),
-        apply_output_override(cfg.output.typescript, output_override),
-      )
     _ ->
       fail(
         "Unknown target: "
         <> target_override
-        <> "\nValid targets: gleam, typescript, react-query, swr, fetch, all",
+        <> "\nValid targets: gleam, typescript, react-query, swr, all",
       )
   }
 }
@@ -276,7 +378,6 @@ pub fn plan_files(
   let ts_tc = apply_output_override(out.typescript, output_override)
   let rq_tc = apply_output_override(out.react_query, output_override)
   let swr_tc = apply_output_override(out.swr, output_override)
-  let fetch_tc = apply_output_override(out.fetch, output_override)
 
   // Deduplicated by path: the hooks targets each emit the shared `types` and
   // `client` files, so enabling typescript alongside react-query into one
@@ -297,10 +398,6 @@ pub fn plan_files(
       },
       case swr_tc.enabled {
         True -> generate_swr(codegen_ir, swr_tc, ts_tc)
-        False -> []
-      },
-      case fetch_tc.enabled {
-        True -> generate_fetch(codegen_ir, fetch_tc, ts_tc)
         False -> []
       },
     ]),
@@ -609,16 +706,9 @@ fn generate_swr(
   ])
 }
 
-fn generate_fetch(
-  codegen_ir: CodegenIR,
-  _tc: TargetConfig,
-  ts_tc: TargetConfig,
-) -> List(plugin.GeneratedFile) {
-  generate_typescript(codegen_ir, ts_tc)
-}
-
 fn write_generated_files(
   files: List(plugin.GeneratedFile),
+  v: Verbosity,
 ) -> Result(Nil, List(String)) {
   let failures =
     list.filter_map(files, fn(file) {
@@ -628,7 +718,7 @@ fn write_generated_files(
 
       case simplifile.write(full_path, file.content) {
         Ok(_) -> {
-          io.println("  Wrote: " <> full_path)
+          detail(v, "  Wrote: " <> full_path)
           Error(Nil)
         }
         Error(_) -> {
@@ -732,9 +822,6 @@ output:
     enabled: false
 
   swr:
-    enabled: false
-
-  fetch:
     enabled: false
 "
 }
@@ -941,65 +1028,109 @@ fn bundle_command() -> glint.Command(Nil) {
 
 fn validate_command() -> glint.Command(Nil) {
   use <- glint.command_help("Validate an OpenAPI spec.")
+  use format <- glint.flag(
+    glint.string_flag("format")
+    |> glint.flag_default("text")
+    |> glint.flag_help(
+      "Diagnostic output format: text (default) or json (machine-readable)",
+    ),
+  )
   use spec_path <- glint.named_arg("spec-path")
-  use named, _unnamed, _flags <- glint.command()
+  use named, _unnamed, flags <- glint.command()
 
   let spec = spec_path(named)
+  let json_output = result.unwrap(format(flags), "text") == "json"
 
-  io.println("Validating spec: " <> spec)
+  let parse_result = case spec {
+    "-" -> yaml.parse_yaml(read_stdin())
+    _ -> yaml.parse_file(spec)
+  }
 
-  case yaml.parse_file(spec) {
+  case parse_result {
     Error(err) -> {
-      let detail = case err {
+      let reason = case err {
         yaml.FileError(path, msg) -> "File error (" <> path <> "): " <> msg
         yaml.YamlSyntaxError(msg) -> "YAML syntax error: " <> msg
         yaml.YamlDecodeError(_) -> "Failed to decode OpenAPI document"
       }
-      fail("Error: Failed to parse spec file\n  " <> detail)
+      case json_output {
+        True -> {
+          io.println(validate_json(spec, ["parse: " <> reason], []))
+          halt(1)
+        }
+        False -> fail("Error: Failed to parse spec\n  " <> reason)
+      }
     }
     Ok(doc) -> {
-      let validate_ok = case validator.validate(doc) {
-        validator.Valid -> {
-          io.println("Spec is valid.")
-          True
-        }
-        validator.Invalid(errors) -> {
-          io.println(
-            "Spec has "
-            <> int.to_string(list.length(errors))
-            <> " validation error(s):",
-          )
-          list.each(errors, fn(err) {
-            io.println("  - " <> validator_errors.to_string(err))
-          })
-          False
-        }
+      let errors = case validator.validate(doc) {
+        validator.Valid -> []
+        validator.Invalid(errs) -> list.map(errs, validator_errors.to_string)
+      }
+      let issues = case capability.check(doc) {
+        Ok(_) -> []
+        Error(caps) -> list.map(caps, capability.issue_to_string)
       }
 
-      let capability_ok = case capability.check(doc) {
-        Ok(_) -> True
-        Error(issues) -> {
-          io.println("")
-          io.println(
-            "Spec uses "
-            <> int.to_string(list.length(issues))
-            <> " unsupported capabilit"
-            <> case list.length(issues) {
-              1 -> "y:"
-              _ -> "ies:"
-            },
-          )
-          list.each(issues, fn(issue) {
-            io.println(capability.issue_to_string(issue))
-          })
-          False
-        }
+      case json_output {
+        True -> io.println(validate_json(spec, errors, issues))
+        False -> print_validation_text(spec, errors, issues)
       }
 
-      case validate_ok && capability_ok {
-        True -> Nil
-        False -> halt(1)
+      case errors, issues {
+        [], [] -> Nil
+        _, _ -> halt(1)
       }
     }
   }
+}
+
+/// Human-readable validate output (unchanged behaviour).
+fn print_validation_text(
+  spec: String,
+  errors: List(String),
+  issues: List(String),
+) -> Nil {
+  io.println("Validating spec: " <> spec)
+  case errors {
+    [] -> io.println("Spec is valid.")
+    _ -> {
+      io.println(
+        "Spec has "
+        <> int.to_string(list.length(errors))
+        <> " validation error(s):",
+      )
+      list.each(errors, fn(e) { io.println("  - " <> e) })
+    }
+  }
+  case issues {
+    [] -> Nil
+    _ -> {
+      io.println("")
+      io.println(
+        "Spec uses "
+        <> int.to_string(list.length(issues))
+        <> " unsupported capabilit"
+        <> case list.length(issues) {
+          1 -> "y:"
+          _ -> "ies:"
+        },
+      )
+      list.each(issues, fn(i) { io.println(i) })
+    }
+  }
+}
+
+/// Machine-readable validate diagnostics for `--format=json`.
+fn validate_json(
+  spec: String,
+  errors: List(String),
+  issues: List(String),
+) -> String {
+  json.object([
+    #("spec", json.string(spec)),
+    #("valid", json.bool(errors == [] && issues == [])),
+    #("errors", json.array(errors, json.string)),
+    #("capability_issues", json.array(issues, json.string)),
+  ])
+  |> json.to_string
 }

@@ -17,7 +17,6 @@ pub fn load_config_test() {
   should.equal(cfg.output.typescript.generated_suffix, True)
   should.equal(cfg.output.react_query.enabled, False)
   should.equal(cfg.output.swr.enabled, False)
-  should.equal(cfg.output.fetch.enabled, False)
 }
 
 pub fn default_config_test() {
@@ -33,7 +32,6 @@ pub fn default_config_test() {
   should.equal(cfg.output.typescript.generated_suffix, True)
   should.equal(cfg.output.react_query.enabled, False)
   should.equal(cfg.output.swr.enabled, False)
-  should.equal(cfg.output.fetch.enabled, False)
 }
 
 pub fn missing_fields_use_defaults_test() {

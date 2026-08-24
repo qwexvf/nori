@@ -22,7 +22,6 @@ pub type OutputConfig {
     typescript: TargetConfig,
     react_query: TargetConfig,
     swr: TargetConfig,
-    fetch: TargetConfig,
   )
 }
 
@@ -82,7 +81,6 @@ pub fn default() -> Config {
       typescript: disabled_target("./generated", True),
       react_query: disabled_target("./generated", True),
       swr: disabled_target("./generated", True),
-      fetch: disabled_target("./generated", True),
     ),
   )
 }
@@ -134,7 +132,6 @@ fn parse_output_config(yaml: YamlValue, defaults: OutputConfig) -> OutputConfig 
     typescript: parse_target(yaml, "typescript", defaults.typescript),
     react_query: parse_target(yaml, "react_query", defaults.react_query),
     swr: parse_target(yaml, "swr", defaults.swr),
-    fetch: parse_target(yaml, "fetch", defaults.fetch),
   )
 }
 
