@@ -234,6 +234,56 @@ pub fn generate_gleam_client_no_prefix_test() {
   |> should.be_true
 }
 
+// Regression for #43: an object (schema-less) request body used to be dropped —
+// typed `Dynamic` and encoded as the literal string "unsupported". It must now
+// be a caller-built `json.Json` that is serialized into the body.
+fn freeform_body_ir() -> ir.CodegenIR {
+  CodegenIR(
+    title: "Webhook API",
+    version: "1.0.0",
+    base_url: Some("https://api.example.com"),
+    types: [],
+    endpoints: [
+      Endpoint(
+        operation_id: "ingest_webhook",
+        method: Post,
+        path: "/webhook",
+        summary: None,
+        description: None,
+        tags: [],
+        parameters: [],
+        request_body: Some(ir.RequestBodyIR(
+          content_type: "application/json",
+          type_ref: ir.Unknown,
+          required: True,
+        )),
+        responses: [],
+        deprecated: False,
+        security: None,
+      ),
+    ],
+    security_schemes: [],
+    global_security: [],
+  )
+}
+
+pub fn object_request_body_is_serialized_test() {
+  let output = gleam_client.generate(freeform_body_ir(), "generated")
+
+  // never emit the old placeholder
+  output |> string.contains("unsupported") |> should.be_false
+  // body arg is a caller-built Json value...
+  output |> string.contains("body: json.Json") |> should.be_true
+  // ...passed straight through into the request body
+  output
+  |> string.contains("request.set_body(json.to_string(body))")
+  |> should.be_true
+  // a Json body needs no `Dynamic` import
+  output
+  |> string.contains("import gleam/dynamic.{type Dynamic}")
+  |> should.be_false
+}
+
 pub fn generate_gleam_routes_test() {
   let ir = sample_ir()
   let output = gleam_routes.generate(ir, "generated")

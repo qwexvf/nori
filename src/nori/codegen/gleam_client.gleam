@@ -174,8 +174,10 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
             None -> False
           }
         })
+      // a non-encodable body is emitted as `json.Json`, so any Optional it
+      // wraps never surfaces as a `Some/None` pattern needing the import
       let body_uses = case ep.request_body {
-        Some(b) -> ref_uses_optional(b.type_ref)
+        Some(b) -> body_encodable(b.type_ref) && ref_uses_optional(b.type_ref)
         None -> False
       }
       let param_uses =
@@ -193,13 +195,11 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
             None -> False
           }
         })
-      let body_uses = case ep.request_body {
-        Some(b) -> ref_uses_unknown(b.type_ref)
-        None -> False
-      }
+      // a non-encodable body (the only way a body reaches `Unknown`) is emitted
+      // as `json.Json`, not `Dynamic`, so it never needs the dynamic import
       let param_uses =
         list.any(ep.parameters, fn(p) { ref_uses_unknown(p.type_ref) })
-      resp_uses || body_uses || param_uses
+      resp_uses || param_uses
     })
 
   let optional_imports = [
@@ -521,7 +521,7 @@ fn build_param_args(
   }
   let body_arg = case body {
     Some(b) -> [
-      ", " <> locals.body <> ": " <> type_ref_to_string(b.type_ref, name_prefix),
+      ", " <> locals.body <> ": " <> body_arg_type(b.type_ref, name_prefix),
     ]
     None -> []
   }
@@ -876,7 +876,44 @@ fn type_ref_encoder_call(
     Primitive(ir.PInt) -> "json.int(" <> expr <> ")"
     Primitive(ir.PFloat) -> "json.float(" <> expr <> ")"
     Primitive(ir.PBool) -> "json.bool(" <> expr <> ")"
-    _ -> "json.string(\"unsupported\")"
+    Primitive(_) -> "json.string(" <> expr <> ")"
+    Array(item) ->
+      "json.array("
+      <> expr
+      <> ", fn(item) { "
+      <> type_ref_encoder_call("item", item, name_prefix)
+      <> " })"
+    Nullable(inner) | Optional(inner) ->
+      "case "
+      <> expr
+      <> " { Some(v) -> "
+      <> type_ref_encoder_call("v", inner, name_prefix)
+      <> " None -> json.null() }"
+    ir.Literal(value) -> "json.string(\"" <> value <> "\")"
+    // freeform object / dictionary bodies have no schema to encode against, so
+    // the caller supplies a `Json` value and we pass it through unchanged
+    ir.Dict(_, _) | ir.Unknown -> expr
+  }
+}
+
+/// Whether a request-body type can be encoded structurally. Non-encodable
+/// bodies (freeform objects, dictionaries) are typed as `Json` so the caller
+/// builds the value — see `body_arg_type` / `type_ref_encoder_call`.
+fn body_encodable(ref: TypeRef) -> Bool {
+  case ref {
+    Named(_) | Primitive(_) | ir.Literal(_) -> True
+    Array(item) -> body_encodable(item)
+    Nullable(inner) | Optional(inner) -> body_encodable(inner)
+    ir.Dict(_, _) | ir.Unknown -> False
+  }
+}
+
+/// The Gleam type of a request-body argument: its natural type when encodable,
+/// otherwise `Json` (the caller-built passthrough).
+fn body_arg_type(ref: TypeRef, name_prefix: String) -> String {
+  case body_encodable(ref) {
+    True -> type_ref_to_string(ref, name_prefix)
+    False -> "json.Json"
   }
 }
 
