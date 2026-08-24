@@ -72,14 +72,12 @@ pub fn main() {
 fn generate_command() -> glint.Command(Nil) {
   use <- glint.command_help(
     "Generate code from an OpenAPI spec.\n\n"
-    <> "Targets: gleam, typescript, react-query, swr, fetch, all",
+    <> "Targets: gleam, typescript, react-query, swr, all",
   )
   use target <- glint.flag(
     glint.string_flag("target")
     |> glint.flag_default("")
-    |> glint.flag_help(
-      "Target: gleam, typescript, react-query, swr, fetch, all",
-    ),
+    |> glint.flag_help("Target: gleam, typescript, react-query, swr, all"),
   )
   use output <- glint.flag(
     glint.string_flag("output")
@@ -245,17 +243,11 @@ fn generate_files_from_config(
         apply_output_override(cfg.output.swr, output_override),
         apply_output_override(cfg.output.typescript, output_override),
       )
-    "fetch" ->
-      generate_fetch(
-        codegen_ir,
-        apply_output_override(cfg.output.fetch, output_override),
-        apply_output_override(cfg.output.typescript, output_override),
-      )
     _ ->
       fail(
         "Unknown target: "
         <> target_override
-        <> "\nValid targets: gleam, typescript, react-query, swr, fetch, all",
+        <> "\nValid targets: gleam, typescript, react-query, swr, all",
       )
   }
 }
@@ -276,7 +268,6 @@ pub fn plan_files(
   let ts_tc = apply_output_override(out.typescript, output_override)
   let rq_tc = apply_output_override(out.react_query, output_override)
   let swr_tc = apply_output_override(out.swr, output_override)
-  let fetch_tc = apply_output_override(out.fetch, output_override)
 
   // Deduplicated by path: the hooks targets each emit the shared `types` and
   // `client` files, so enabling typescript alongside react-query into one
@@ -297,10 +288,6 @@ pub fn plan_files(
       },
       case swr_tc.enabled {
         True -> generate_swr(codegen_ir, swr_tc, ts_tc)
-        False -> []
-      },
-      case fetch_tc.enabled {
-        True -> generate_fetch(codegen_ir, fetch_tc, ts_tc)
         False -> []
       },
     ]),
@@ -609,14 +596,6 @@ fn generate_swr(
   ])
 }
 
-fn generate_fetch(
-  codegen_ir: CodegenIR,
-  _tc: TargetConfig,
-  ts_tc: TargetConfig,
-) -> List(plugin.GeneratedFile) {
-  generate_typescript(codegen_ir, ts_tc)
-}
-
 fn write_generated_files(
   files: List(plugin.GeneratedFile),
 ) -> Result(Nil, List(String)) {
@@ -732,9 +711,6 @@ output:
     enabled: false
 
   swr:
-    enabled: false
-
-  fetch:
     enabled: false
 "
 }
