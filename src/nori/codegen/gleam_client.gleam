@@ -876,7 +876,12 @@ fn type_ref_encoder_call(
     Primitive(ir.PInt) -> "json.int(" <> expr <> ")"
     Primitive(ir.PFloat) -> "json.float(" <> expr <> ")"
     Primitive(ir.PBool) -> "json.bool(" <> expr <> ")"
-    Primitive(_) -> "json.string(" <> expr <> ")"
+    // date/datetime map to String, so json.string is right
+    Primitive(ir.PDateTime) | Primitive(ir.PDate) ->
+      "json.string(" <> expr <> ")"
+    // binary (BitArray) and unit (Nil) have no direct json encoder — treated as
+    // non-encodable below, so the arg is a caller-built Json passed through
+    Primitive(ir.PBinary) | Primitive(ir.PUnit) -> expr
     Array(item) ->
       "json.array("
       <> expr
@@ -901,6 +906,8 @@ fn type_ref_encoder_call(
 /// builds the value — see `body_arg_type` / `type_ref_encoder_call`.
 fn body_encodable(ref: TypeRef) -> Bool {
   case ref {
+    // binary/unit have no json encoder — send them as a caller-built Json
+    Primitive(ir.PBinary) | Primitive(ir.PUnit) -> False
     Named(_) | Primitive(_) | ir.Literal(_) -> True
     Array(item) -> body_encodable(item)
     Nullable(inner) | Optional(inner) -> body_encodable(inner)
