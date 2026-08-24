@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.0.0 - 2026-08-25
+
+### Breaking
+
+- Removed the `fetch` codegen target and its `output.fetch` config field. It was
+  a no-op alias that re-ran the `typescript` generator at the typescript
+  directory, so it produced nothing distinct. Use the `typescript` target — the
+  canonical fetch client. `--target=fetch` now errors, and an `output.fetch`
+  block in a config is ignored.
+- Generated Gleam client: a request body with no schema (a bare `{type: object}`),
+  a dictionary, or a binary/unit primitive is now a caller-built `json.Json`
+  argument instead of `Dynamic`. Previously such a body was typed `Dynamic` and
+  encoded as the literal string `"unsupported"`, so it could not be sent at all.
+  Regenerate and pass a `json.Json` value.
+
+### Added
+
+- `generate --dry-run` plans the output and lists the files it would write
+  without touching the filesystem. (#11)
+- `generate --quiet` suppresses status output (errors still print); `--verbose`
+  adds a line per file written. (#17)
+- The spec can be read from stdin: `generate --spec=-` and `validate -`. (#12)
+- `validate --format=json` emits machine-readable diagnostics (validation errors
+  and capability issues) for editors, CI, and dashboards. (#15)
+
+### Fixed
+
+- An object / freeform / dictionary request body is serialized instead of
+  dropped. The client encoder bailed to the literal string `"unsupported"` for
+  any body that was not a named type or bare primitive. (#43)
+
+### Deprecated
+
+- The TypeScript targets (`typescript`, `react-query`, `swr`) are deprecated —
+  nori is focusing on Gleam. They still run but print a notice and will be
+  removed in a future release. (#21)
+
 ## v1.5.0 - 2026-08-08
 
 ### Added
