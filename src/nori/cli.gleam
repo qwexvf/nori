@@ -247,6 +247,18 @@ fn generate_command() -> glint.Command(Nil) {
           let files =
             generate_files_from_config(codegen_ir, cfg, target_val, output_dir)
 
+          // TS targets are on the way out — nori is focusing on Gleam (#21).
+          // Warn once when a run would emit them, on stderr so it is seen even
+          // under --quiet.
+          case uses_typescript_target(cfg, target_val) {
+            True ->
+              io.println_error(
+                "Note: TypeScript targets (typescript, react-query, swr) are deprecated "
+                <> "and will be removed in a future release; nori is focusing on Gleam.",
+              )
+            False -> Nil
+          }
+
           // Said once, before the paths scroll past: an unrecognised `dirs` key
           // is silently equivalent to not writing one at all.
           case unknown_dirs_keys(cfg.output.gleam) {
@@ -295,6 +307,19 @@ fn generate_command() -> glint.Command(Nil) {
         }
       }
     }
+  }
+}
+
+/// Whether a run would emit any TypeScript target, given the explicit
+/// `--target` (if any) or the enabled targets in the config for `all`.
+fn uses_typescript_target(cfg: Config, target_override: String) -> Bool {
+  case target_override {
+    "typescript" | "react-query" | "swr" -> True
+    "" | "all" ->
+      cfg.output.typescript.enabled
+      || cfg.output.react_query.enabled
+      || cfg.output.swr.enabled
+    _ -> False
   }
 }
 

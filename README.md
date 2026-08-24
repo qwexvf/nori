@@ -8,7 +8,7 @@ OpenAPI 3.0 / 3.1 code generation for Gleam. Parses YAML or JSON specs into a ty
 Built-in generators:
 
 - **Gleam** — types + JSON decoders/encoders, route matcher, HTTP request builders, Wisp middleware (auth, CORS, content-type).
-- **TypeScript** — types, fetch client, React Query hooks, SWR hooks. Customizable via [handles](https://hexdocs.pm/handles/) templates.
+- **TypeScript** — types, fetch client, React Query hooks, SWR hooks. Customizable via [handles](https://hexdocs.pm/handles/) templates. _Deprecated: the TypeScript targets are being phased out so nori can focus on Gleam; they still run but will be removed in a future release._
 
 Powered by [taffy](https://github.com/qwexvf/taffy) for YAML parsing.
 
@@ -33,11 +33,15 @@ gleam run -m nori/cli -- init                            # scaffold
 gleam run -m nori/cli -- generate                        # generate from config
 gleam run -m nori/cli -- generate --spec=./api.yaml      # override spec
 gleam run -m nori/cli -- generate --allow-unsupported    # skip capability gate
+gleam run -m nori/cli -- generate --dry-run              # list files, write nothing
+gleam run -m nori/cli -- generate --quiet                # errors only (--verbose for per-file)
+cat api.yaml | gleam run -m nori/cli -- generate --spec=-  # read spec from stdin
 gleam run -m nori/cli -- bundle spec.yaml                # bundle multi-file spec
 gleam run -m nori/cli -- validate spec.yaml              # structural + capability check
+gleam run -m nori/cli -- validate spec.yaml --format=json  # machine-readable diagnostics
 ```
 
-All commands exit non-zero on error, so they slot into CI.
+All commands exit non-zero on error, so they slot into CI. `--spec=-` (and `validate -`) read the spec from stdin.
 
 `generate` aborts by default when the spec uses features nori can't generate correctly (`discriminator` polymorphism, callbacks, `multipart/form-data`, `deepObject` params, etc.). Pass `--allow-unsupported` to proceed with degraded output.
 
