@@ -6,9 +6,11 @@
 //// - File refs: `./components/schemas/user.yaml`
 //// - File refs with pointer: `./schemas.yaml#/User`
 
+import gleam/bool
 import gleam/dict
 import gleam/list
 import gleam/option
+import gleam/result
 import gleam/set
 import gleam/string
 import nori/ref/types.{
@@ -40,24 +42,19 @@ pub fn resolve(
 pub fn resolve_file(
   entry_path: String,
 ) -> Result(#(YamlValue, RefContext), RefError) {
-  case simplifile.read(entry_path) {
-    Error(_) -> Error(FileNotFound(entry_path))
-    Ok(content) -> {
-      case taffy.parse(content) {
-        Error(err) -> Error(ParseError(entry_path, err.message))
-        Ok(root) -> {
-          let base_dir = directory_of(entry_path)
-          let ctx = types.new_context(base_dir, root)
-          let ctx =
-            RefContext(
-              ..ctx,
-              file_cache: dict.insert(ctx.file_cache, entry_path, root),
-            )
-          resolve(root, ctx)
-        }
-      }
-    }
-  }
+  use content <- result.try(
+    simplifile.read(entry_path)
+    |> result.replace_error(FileNotFound(entry_path)),
+  )
+  use root <- result.try(
+    taffy.parse(content)
+    |> result.map_error(fn(err) { ParseError(entry_path, err.message) }),
+  )
+  let base_dir = directory_of(entry_path)
+  let ctx = types.new_context(base_dir, root)
+  let ctx =
+    RefContext(..ctx, file_cache: dict.insert(ctx.file_cache, entry_path, root))
+  resolve(root, ctx)
 }
 
 fn resolve_mapping(
@@ -82,11 +79,8 @@ fn resolve_mapping_pairs(
   case pairs {
     [] -> Ok(#(Mapping(list.reverse(acc)), ctx))
     [#(key, val), ..rest] -> {
-      case resolve(val, ctx) {
-        Error(e) -> Error(e)
-        Ok(#(resolved_val, new_ctx)) ->
-          resolve_mapping_pairs(rest, [#(key, resolved_val), ..acc], new_ctx)
-      }
+      use #(resolved_val, new_ctx) <- result.try(resolve(val, ctx))
+      resolve_mapping_pairs(rest, [#(key, resolved_val), ..acc], new_ctx)
     }
   }
 }
@@ -106,11 +100,8 @@ fn resolve_sequence_items(
   case items {
     [] -> Ok(#(Sequence(list.reverse(acc)), ctx))
     [item, ..rest] -> {
-      case resolve(item, ctx) {
-        Error(e) -> Error(e)
-        Ok(#(resolved, new_ctx)) ->
-          resolve_sequence_items(rest, [resolved, ..acc], new_ctx)
-      }
+      use #(resolved, new_ctx) <- result.try(resolve(item, ctx))
+      resolve_sequence_items(rest, [resolved, ..acc], new_ctx)
     }
   }
 }
@@ -121,22 +112,17 @@ fn resolve_ref_string(
   ctx: RefContext,
 ) -> Result(#(YamlValue, RefContext), RefError) {
   // Cycle detection
-  case set.contains(ctx.visited, ref_str) {
-    True -> Error(CircularReference(set.to_list(ctx.visited)))
-    False -> {
-      let ctx = RefContext(..ctx, visited: set.insert(ctx.visited, ref_str))
-      case parse_ref(ref_str) {
-        Error(e) -> Error(e)
-        Ok(parsed) -> {
-          case parsed {
-            LocalRef(pointer) -> resolve_local_ref(pointer, ref_str, ctx)
-            FileRef(path) -> resolve_file_ref(path, [], ref_str, ctx)
-            FileRefWithPointer(path, pointer) ->
-              resolve_file_ref(path, pointer, ref_str, ctx)
-          }
-        }
-      }
-    }
+  use <- bool.guard(
+    when: set.contains(ctx.visited, ref_str),
+    return: Error(CircularReference(set.to_list(ctx.visited))),
+  )
+  let ctx = RefContext(..ctx, visited: set.insert(ctx.visited, ref_str))
+  use parsed <- result.try(parse_ref(ref_str))
+  case parsed {
+    LocalRef(pointer) -> resolve_local_ref(pointer, ref_str, ctx)
+    FileRef(path) -> resolve_file_ref(path, [], ref_str, ctx)
+    FileRefWithPointer(path, pointer) ->
+      resolve_file_ref(path, pointer, ref_str, ctx)
   }
 }
 
@@ -146,14 +132,13 @@ fn resolve_local_ref(
   ref_str: String,
   ctx: RefContext,
 ) -> Result(#(YamlValue, RefContext), RefError) {
-  case navigate_pointer(ctx.root, pointer) {
-    option.Some(value) -> {
-      // Remove from visited after successful resolution, then resolve the target
-      let ctx = RefContext(..ctx, visited: set.delete(ctx.visited, ref_str))
-      resolve(value, ctx)
-    }
-    option.None -> Error(RefTargetNotFound(ref_str, string.join(pointer, "/")))
-  }
+  use value <- result.try(
+    navigate_pointer(ctx.root, pointer)
+    |> option.to_result(RefTargetNotFound(ref_str, string.join(pointer, "/"))),
+  )
+  // Remove from visited after successful resolution, then resolve the target
+  let ctx = RefContext(..ctx, visited: set.delete(ctx.visited, ref_str))
+  resolve(value, ctx)
 }
 
 /// Resolves a file ref, optionally with a JSON pointer into the loaded file.
@@ -164,39 +149,29 @@ fn resolve_file_ref(
   ctx: RefContext,
 ) -> Result(#(YamlValue, RefContext), RefError) {
   let full_path = resolve_path(ctx.base_dir, path)
-  case load_or_cache(full_path, ctx) {
-    Error(e) -> Error(e)
-    Ok(#(file_value, new_ctx)) -> {
-      let target = case pointer {
-        [] -> option.Some(file_value)
-        _ -> navigate_pointer(file_value, pointer)
-      }
-      case target {
-        option.None ->
-          Error(RefTargetNotFound(ref_str, string.join(pointer, "/")))
-        option.Some(value) -> {
-          // Resolve with the file's base directory as context
-          let file_base = directory_of(full_path)
-          let resolve_ctx =
-            RefContext(
-              ..new_ctx,
-              base_dir: file_base,
-              root: file_value,
-              visited: set.delete(new_ctx.visited, ref_str),
-            )
-          case resolve(value, resolve_ctx) {
-            Error(e) -> Error(e)
-            Ok(#(resolved, final_ctx)) -> {
-              // Restore original base_dir and root
-              let restored_ctx =
-                RefContext(..final_ctx, base_dir: ctx.base_dir, root: ctx.root)
-              Ok(#(resolved, restored_ctx))
-            }
-          }
-        }
-      }
-    }
+  use #(file_value, new_ctx) <- result.try(load_or_cache(full_path, ctx))
+  let target = case pointer {
+    [] -> option.Some(file_value)
+    _ -> navigate_pointer(file_value, pointer)
   }
+  use value <- result.try(
+    target
+    |> option.to_result(RefTargetNotFound(ref_str, string.join(pointer, "/"))),
+  )
+  // Resolve with the file's base directory as context
+  let file_base = directory_of(full_path)
+  let resolve_ctx =
+    RefContext(
+      ..new_ctx,
+      base_dir: file_base,
+      root: file_value,
+      visited: set.delete(new_ctx.visited, ref_str),
+    )
+  use #(resolved, final_ctx) <- result.try(resolve(value, resolve_ctx))
+  // Restore original base_dir and root
+  let restored_ctx =
+    RefContext(..final_ctx, base_dir: ctx.base_dir, root: ctx.root)
+  Ok(#(resolved, restored_ctx))
 }
 
 /// Loads a file from disk or returns it from cache.
@@ -207,22 +182,16 @@ fn load_or_cache(
   case dict.get(ctx.file_cache, path) {
     Ok(cached) -> Ok(#(cached, ctx))
     Error(_) -> {
-      case simplifile.read(path) {
-        Error(_) -> Error(FileNotFound(path))
-        Ok(content) -> {
-          case taffy.parse(content) {
-            Error(err) -> Error(ParseError(path, err.message))
-            Ok(value) -> {
-              let new_ctx =
-                RefContext(
-                  ..ctx,
-                  file_cache: dict.insert(ctx.file_cache, path, value),
-                )
-              Ok(#(value, new_ctx))
-            }
-          }
-        }
-      }
+      use content <- result.try(
+        simplifile.read(path) |> result.replace_error(FileNotFound(path)),
+      )
+      use value <- result.try(
+        taffy.parse(content)
+        |> result.map_error(fn(err) { ParseError(path, err.message) }),
+      )
+      let new_ctx =
+        RefContext(..ctx, file_cache: dict.insert(ctx.file_cache, path, value))
+      Ok(#(value, new_ctx))
     }
   }
 }
