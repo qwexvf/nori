@@ -3,14 +3,14 @@
 [![Package Version](https://img.shields.io/hexpm/v/nori)](https://hex.pm/packages/nori)
 [![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/nori/)
 
-OpenAPI 3.0 / 3.1 code generation for Gleam. Parses YAML or JSON specs into a typed `Document`, validates them, surfaces unsupported features as typed issues, and exposes a stable `CodegenIR` that built-in and third-party generators consume.
+OpenAPI 3.0 / 3.1 code generation for Gleam. nori parses a YAML or JSON spec into a typed `Document` and validates it. Anything it can't handle comes back as a typed issue. Generators (the built-in ones and your own) work from a stable `CodegenIR`.
 
 Built-in generators:
 
-- **Gleam** — types + JSON decoders/encoders, route matcher, HTTP request builders, Wisp middleware (auth, CORS, content-type).
-- **TypeScript** — types, fetch client, React Query hooks, SWR hooks. Customizable via [handles](https://hexdocs.pm/handles/) templates. _Deprecated: the TypeScript targets are being phased out so nori can focus on Gleam; they still run but will be removed in a future release._
+- **Gleam:** types with JSON decoders/encoders, a route matcher, HTTP request builders, and Wisp middleware (auth, CORS, content-type).
+- **TypeScript:** types, a fetch client, React Query hooks and SWR hooks. You can change the output with [handles](https://hexdocs.pm/handles/) templates. _Deprecated: I'm phasing out the TypeScript targets so nori can focus on Gleam. They still run, but a future release will remove them._
 
-Powered by [taffy](https://github.com/qwexvf/taffy) for YAML parsing.
+YAML parsing uses [taffy](https://github.com/qwexvf/taffy).
 
 ## Install
 
@@ -41,14 +41,14 @@ gleam run -m nori/cli -- validate spec.yaml              # structural + capabili
 gleam run -m nori/cli -- validate spec.yaml --format=json  # machine-readable diagnostics
 ```
 
-All commands exit non-zero on error, so they slot into CI. `--spec=-` (and `validate -`) read the spec from stdin.
+Every command exits non-zero on error, so they work in CI. `--spec=-` (and `validate -`) read the spec from stdin.
 
-`generate` aborts by default when the spec uses features nori can't generate correctly (`discriminator` polymorphism, callbacks, `multipart/form-data`, `deepObject` params, etc.). Pass `--allow-unsupported` to proceed with degraded output.
+`generate` aborts by default when the spec uses features nori can't generate correctly (`discriminator` polymorphism, callbacks, `multipart/form-data`, `deepObject` params, etc.). Pass `--allow-unsupported` to generate anyway, with degraded output.
 
 ## Config
 
 Only the Gleam target runs by default. A TypeScript target runs when the config
-names it — writing a block for one is the request, and `enabled: false` turns it
+names it: writing a block for it turns it on, and `enabled: false` turns it
 back off.
 
 ```yaml
@@ -97,11 +97,11 @@ See `nori.config.example.yaml` for every option.
 
 **Gleam** (server-side):
 
-- `types.gleam` — record types, `gleam/dynamic/decode` decoders, JSON encoders
-- `routes.gleam` — `Route` union, `match_route(method, segments)`, and a typed
-  query-parameter reader per endpoint that declares them
-- `client.gleam` — typed request builders
-- `middleware.gleam` — auth extractors, CORS, content-type validation
+- `types.gleam`: record types, `gleam/dynamic/decode` decoders, JSON encoders
+- `routes.gleam`: a `Route` union, `match_route(method, segments)`, and a typed
+  query-parameter reader for each endpoint that has query parameters
+- `client.gleam`: typed request builders
+- `middleware.gleam`: auth extractors, CORS, content-type validation
 
 Query parameters are typed in both directions. For
 `GET /issues?status=&limit=`:
@@ -120,14 +120,14 @@ one value containing a comma.
 
 **TypeScript** (client-side):
 
-- `types.generated.ts` — interfaces/types from schemas (with cookie-auth detection)
-- `client.generated.ts` — typed `fetch()` wrapper per endpoint
-- `hooks.generated.ts` — React Query `useQuery` / `useMutation` hooks
-- `swr-hooks.generated.ts` — SWR hooks
+- `types.generated.ts`: interfaces/types from schemas (detects cookie auth)
+- `client.generated.ts`: a typed `fetch()` wrapper for each endpoint
+- `hooks.generated.ts`: React Query `useQuery` / `useMutation` hooks
+- `swr-hooks.generated.ts`: SWR hooks
 
 ## Library API
 
-Use nori without the CLI to parse, inspect, or drive your own generator on top of `CodegenIR`:
+You can skip the CLI and call nori directly, to parse and inspect a spec or to run your own generator on `CodegenIR`:
 
 ```gleam
 import gleam/int
@@ -185,11 +185,11 @@ templates/typescript_react_query.hbs
 templates/typescript_swr.hbs
 ```
 
-Edit them and re-run `generate`. Embedded fallbacks are used when the files are missing.
+Edit them and re-run `generate`. If the files are missing, nori uses its built-in copies.
 
 ## Extending nori
 
-`nori/codegen/ir.CodegenIR` is the public contract. Build a satellite package that consumes it to add a new target (language, framework, tooling):
+`nori/codegen/ir.CodegenIR` is the public contract. To add a new target (a language, framework or tool), write a separate package that reads it:
 
 ```gleam
 import nori/codegen/ir
@@ -200,11 +200,11 @@ pub fn generate(ir: ir.CodegenIR) -> String {
 }
 ```
 
-Planned satellite packages: `nori_oauth` (OAuth2 / OIDC), `nori_multipart` (multipart bodies), `nori_react_query` (extracted from core).
+Planned add-on packages: `nori_oauth` (OAuth2 / OIDC), `nori_multipart` (multipart bodies), `nori_react_query` (extracted from core).
 
 ## Limitations
 
-Caught by the capability check — generation aborts unless you pass `--allow-unsupported`:
+The capability check catches these, and generation stops unless you pass `--allow-unsupported`:
 
 - `discriminator` polymorphism ([#14](https://github.com/qwexvf/nori/issues/14))
 - Callbacks / webhooks codegen
@@ -219,9 +219,9 @@ Tracked roadmap:
 
 ## Examples
 
-- `examples/petstore/` — generated output from the Petstore spec
-- `examples/realworld/` — blog API (users, posts, comments, enums, `allOf`)
-- `examples/wisp_app/` — working Todo API server on Wisp
+- `examples/petstore/`: generated output for the Petstore spec
+- `examples/realworld/`: a blog API (users, posts, comments, enums, `allOf`)
+- `examples/wisp_app/`: a working Todo API server on Wisp
 
 ## Development
 
