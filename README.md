@@ -200,7 +200,7 @@ pub fn generate(ir: ir.CodegenIR) -> String {
 }
 ```
 
-Planned add-on packages: `nori_oauth` (OAuth2 / OIDC), `nori_multipart` (multipart bodies), `nori_react_query` (extracted from core).
+Planned add-on packages: `nori_oauth` (OAuth2 / OIDC), `nori_multipart` (multipart bodies).
 
 ## Limitations
 
@@ -215,7 +215,6 @@ Tracked roadmap:
 
 - Schema validation constraints in decoder ([#3](https://github.com/qwexvf/nori/issues/3))
 - Zod / Valibot validation generation ([#7](https://github.com/qwexvf/nori/issues/7))
-- Query parameter decoders ([#8](https://github.com/qwexvf/nori/issues/8))
 
 ## Examples
 
@@ -226,7 +225,7 @@ Tracked roadmap:
 ## Development
 
 ```bash
-gleam test    # 88 tests
+gleam test    # run the tests
 gleam check   # type check
 gleam format src test
 ```
