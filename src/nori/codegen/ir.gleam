@@ -9,6 +9,8 @@
 //// to be stable and human-readable — semantic versioning rules of nori
 //// itself apply to this module.
 
+import gleam/dict.{type Dict}
+import gleam/json.{type Json}
 import gleam/option.{type Option, None, Some}
 
 /// The complete codegen IR — everything a generator needs to produce code.
@@ -174,6 +176,9 @@ pub type Endpoint {
     deprecated: Bool,
     /// Per-endpoint security. None = use global, Some([]) = public, Some([...]) = specific
     security: Option(List(SecurityRequirementIR)),
+    /// The operation's `x-*` extensions, as written in the spec. Generators
+    /// read the ones they know (the MCP generator reads `x-mcp`).
+    extensions: Dict(String, Json),
   )
 }
 

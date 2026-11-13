@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/list
 import gleam/option.{None}
 import gleam/string
@@ -46,6 +47,7 @@ fn client_ir(
         responses: [],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
     ],
     security_schemes: [],

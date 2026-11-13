@@ -18,6 +18,7 @@ import gleam/list
 import gleam/string
 import gleeunit/should
 import nori/codegen/gleam_client
+import nori/codegen/gleam_mcp
 import nori/codegen/gleam_middleware
 import nori/codegen/gleam_routes
 import nori/codegen/gleam_types
@@ -350,6 +351,15 @@ fn write_generated(codegen_ir: CodegenIR) -> Nil {
       ),
       #("client.gleam", gleam_client.generate(codegen_ir, module_prefix)),
     ],
+    case gleam_mcp.has_tools(codegen_ir) {
+      True -> [
+        #(
+          "mcp.gleam",
+          gleam_mcp.generate(codegen_ir, module_prefix, module_prefix),
+        ),
+      ]
+      False -> []
+    },
   ])
   |> list.each(fn(pair) {
     let #(name, contents) = pair
@@ -1235,4 +1245,130 @@ paths:
   routes |> string.contains("Dynamic") |> should.be_false
   routes |> string.contains("SendMessageRequest") |> should.be_true
   ir |> should_compile
+}
+
+/// #52: operations with `x-mcp` become tools whose schemas and argument
+/// decoding match the HTTP side; an operation without it is not a tool.
+pub fn mcp_tools_behave_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Tools
+  version: '1.0.0'
+paths:
+  /threads/{threadId}/messages:
+    post:
+      operationId: sendMessage
+      summary: Send a message
+      x-mcp: { tool: send_message, scopes: [messages:write], confirm: true }
+      parameters:
+        - { name: threadId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, maxLength: 5 }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+  /jobs:
+    get:
+      operationId: searchJobs
+      x-mcp: { scopes: [jobs:read] }
+      parameters:
+        - { name: days, in: query, schema: { type: array, items: { type: integer, minimum: 1, maximum: 5 } } }
+        - { name: role, in: query, schema: { $ref: '#/components/schemas/Role' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Message' } }
+  /health:
+    get:
+      operationId: health
+      responses:
+        '204': { description: OK }
+components:
+  schemas:
+    Role:
+      type: string
+      enum: [backend, frontend]
+    Message:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }"
+
+  let main_source =
+    "import generated/mcp
+import gleam/dynamic/decode
+import gleam/io
+import gleam/json
+import gleam/list
+import gleam/string
+
+fn call(label: String, name: String, arguments: String) -> Nil {
+  let assert Ok(args) = json.parse(arguments, decode.dynamic)
+  io.println(label <> \"=\" <> string.inspect(mcp.decode_call(name, args)))
+}
+
+pub fn main() {
+  io.println(\"names=\" <> string.inspect(list.map(mcp.tools(), fn(t) { t.name })))
+  let assert Ok(send) = mcp.tool(\"send_message\")
+  io.println(\"send=\" <> json.to_string(mcp.tool_to_json(send)))
+  io.println(\"send_meta=\" <> string.inspect(#(send.scopes, send.confirm, send.operation_id)))
+  let assert Ok(search) = mcp.tool(\"search_jobs\")
+  io.println(\"search=\" <> json.to_string(mcp.tool_to_json(search)))
+  call(\"ok\", \"send_message\", \"{\\\"threadId\\\":\\\"t1\\\",\\\"body\\\":{\\\"text\\\":\\\"hi\\\"}}\")
+  call(\"long\", \"send_message\", \"{\\\"threadId\\\":\\\"t1\\\",\\\"body\\\":{\\\"text\\\":\\\"toolong\\\"}}\")
+  call(\"no_body\", \"send_message\", \"{\\\"threadId\\\":\\\"t1\\\"}\")
+  call(\"query\", \"search_jobs\", \"{\\\"days\\\":[1,5],\\\"role\\\":\\\"backend\\\"}\")
+  call(\"empty_query\", \"search_jobs\", \"{}\")
+  call(\"bad_day\", \"search_jobs\", \"{\\\"days\\\":[6]}\")
+  call(\"unknown\", \"health\", \"{}\")
+}
+"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+
+  assert_line("names=[\"search_jobs\", \"send_message\"]")
+  assert_line(
+    "send={\"name\":\"send_message\",\"description\":\"Send a message\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"threadId\":{\"type\":\"string\"},\"body\":{\"$ref\":\"#/$defs/SendMessageRequest\"}},\"required\":[\"threadId\",\"body\"],\"$defs\":{\"SendMessageRequest\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":5}},\"required\":[\"text\"]}}},\"title\":\"Send a message\",\"outputSchema\":{\"$ref\":\"#/$defs/Message\",\"$defs\":{\"Message\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"]}}}}",
+  )
+  assert_line("send_meta=#([\"messages:write\"], True, \"sendMessage\")")
+  // An array response is not an object, so it gets no outputSchema.
+  assert_line(
+    "search={\"name\":\"search_jobs\",\"description\":\"searchJobs\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"days\":{\"type\":\"array\",\"items\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":5}},\"role\":{\"$ref\":\"#/$defs/Role\"}},\"$defs\":{\"Role\":{\"type\":\"string\",\"enum\":[\"backend\",\"frontend\"]}}}}",
+  )
+  assert_line("ok=Ok(SendMessage(\"t1\", SendMessageRequest(\"hi\")))")
+  assert_line(
+    "long=Error(InvalidArguments([DecodeError(\"string length >= 1 and length <= 5\", \"String\", [\"body\", \"text\"])]))",
+  )
+  assert_line(
+    "no_body=Error(InvalidArguments([DecodeError(\"Field\", \"Nothing\", [\"body\"])]))",
+  )
+  assert_line(
+    "query=Ok(SearchJobs(SearchJobsQuery([1, 5], Some(RoleBackend))))",
+  )
+  assert_line("empty_query=Ok(SearchJobs(SearchJobsQuery([], None)))")
+  assert_line(
+    "bad_day=Error(InvalidArguments([DecodeError(\"integer >= 1 and <= 5\", \"Int\", [\"days\", \"0\"])]))",
+  )
+  assert_line("unknown=Error(UnknownTool(\"health\"))")
 }
