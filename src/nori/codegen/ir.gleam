@@ -67,11 +67,21 @@ pub type TypeDef {
   UnionType(
     name: String,
     members: List(TypeRef),
-    discriminator: Option(String),
+    discriminator: Option(Discriminator),
     description: Option(String),
   )
   /// Type alias, e.g., type UserId = String
   AliasType(name: String, target: TypeRef, description: Option(String))
+}
+
+/// How a tagged union picks its member: the property that carries the tag,
+/// and every tag value paired with the member it selects.
+///
+/// `mapping` is already resolved. A member the spec's `mapping` does not name
+/// gets its schema name as its tag, which is what OpenAPI prescribes, so a
+/// generator never has to know about the implicit case.
+pub type Discriminator {
+  Discriminator(property: String, mapping: List(#(String, TypeRef)))
 }
 
 /// A field in a record type.

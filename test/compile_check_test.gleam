@@ -1372,3 +1372,120 @@ pub fn main() {
   )
   assert_line("unknown=Error(UnknownTool(\"health\"))")
 }
+
+/// #14: a tagged union decodes each tag to its member, rejects an unknown tag
+/// on the tag itself, and encodes back to the same object. An untagged union
+/// keeps the first member that decodes.
+pub fn discriminated_union_behaves_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Unions
+  version: '1.0.0'
+paths:
+  /messages:
+    get:
+      operationId: listMessages
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Message'
+components:
+  schemas:
+    Message:
+      oneOf:
+        - $ref: '#/components/schemas/TextMessage'
+        - $ref: '#/components/schemas/EventMessage'
+      discriminator:
+        propertyName: kind
+        mapping:
+          text: '#/components/schemas/TextMessage'
+          event: EventMessage
+          meeting: EventMessage
+    TextMessage:
+      type: object
+      required: [kind, body]
+      properties:
+        kind: { type: string }
+        body: { type: string }
+    EventMessage:
+      type: object
+      required: [kind, at]
+      properties:
+        kind: { type: string }
+        at: { type: string }
+    Contact:
+      oneOf:
+        - $ref: '#/components/schemas/Email'
+        - $ref: '#/components/schemas/Phone'
+    Email:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string }
+    Phone:
+      type: object
+      required: [phone]
+      properties:
+        phone: { type: string }"
+
+  let main_source =
+    "import generated/types
+import gleam/io
+import gleam/json
+import gleam/string
+
+fn show(label: String, input: String) -> Nil {
+  let result = json.parse(input, types.message_decoder())
+  io.println(label <> \"=\" <> string.inspect(result))
+  case result {
+    Ok(m) -> io.println(label <> \"_out=\" <> json.to_string(types.encode_message(m)))
+    Error(_) -> Nil
+  }
+}
+
+pub fn main() {
+  show(\"text\", \"{\\\"kind\\\":\\\"text\\\",\\\"body\\\":\\\"hi\\\"}\")
+  show(\"event\", \"{\\\"kind\\\":\\\"event\\\",\\\"at\\\":\\\"10:00\\\"}\")
+  show(\"meeting\", \"{\\\"kind\\\":\\\"meeting\\\",\\\"at\\\":\\\"11:00\\\"}\")
+  show(\"unknown\", \"{\\\"kind\\\":\\\"poll\\\",\\\"body\\\":\\\"hi\\\"}\")
+  show(\"wrong_shape\", \"{\\\"kind\\\":\\\"event\\\",\\\"body\\\":\\\"hi\\\"}\")
+  io.println(\"phone=\" <> string.inspect(json.parse(\"{\\\"phone\\\":\\\"123\\\"}\", types.contact_decoder())))
+  io.println(\"neither=\" <> string.inspect(json.parse(\"{}\", types.contact_decoder())))
+}
+"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+
+  // Field order inside a record follows the properties dict, which differs
+  // between targets, so these check pieces rather than whole lines.
+  assert_line("text=Ok(TextMessageVariant(TextMessage(")
+  assert_line("\"kind\":\"text\"")
+  assert_line("\"body\":\"hi\"")
+  assert_line("event=Ok(EventMessageVariant(EventMessage(")
+  assert_line("meeting=Ok(EventMessageVariant(EventMessage(")
+  assert_line("\"kind\":\"meeting\"")
+  // The tag is reported first. The catch-all arm still runs on the data, so
+  // the last member's missing fields follow it.
+  assert_line(
+    "unknown=Error(UnableToDecode([DecodeError(\"Message.kind\", \"String\", [\"kind\"])",
+  )
+  assert_line(
+    "wrong_shape=Error(UnableToDecode([DecodeError(\"Field\", \"Nothing\", [\"at\"])]))",
+  )
+  assert_line("phone=Ok(PhoneVariant(Phone(\"123\")))")
+  assert_line("neither=Error(UnableToDecode(")
+}

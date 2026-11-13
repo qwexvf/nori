@@ -320,7 +320,11 @@ fn build_union_type(
       }
     })
   let disc = case discriminator {
-    option.Some(d) -> option.Some(d.property_name)
+    option.Some(d) ->
+      option.Some(ir.Discriminator(
+        property: d.property_name,
+        mapping: discriminator_mapping(members, d),
+      ))
     option.None -> option.None
   }
   ir.UnionType(
@@ -329,6 +333,53 @@ fn build_union_type(
     discriminator: disc,
     description: description,
   )
+}
+
+/// Every tag value paired with the member it selects, in member order.
+///
+/// An explicit `mapping` entry may name its target as a full `$ref` or as a
+/// bare schema name. A `$ref` member with no entry pointing at it is tagged
+/// with its own schema name. Inline members have no name to be tagged with,
+/// so only an explicit entry could reach them, and an entry has no way to
+/// point at an inline schema: they get no tag.
+fn discriminator_mapping(
+  members: List(reference.Ref(Schema)),
+  d: schema.Discriminator,
+) -> List(#(String, ir.TypeRef)) {
+  let explicit = case d.mapping {
+    option.Some(m) ->
+      dict.to_list(m)
+      |> list.map(fn(pair) { #(pair.0, mapping_target_name(pair.1)) })
+      |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+    option.None -> []
+  }
+  list.flat_map(members, fn(member) {
+    case member {
+      reference.Inline(_) -> []
+      reference.Reference(ref_str) -> {
+        let component = ref_component_name(ref_str)
+        let tags =
+          list.filter_map(explicit, fn(pair) {
+            case pair.1 == component {
+              True -> Ok(pair.0)
+              False -> Error(Nil)
+            }
+          })
+        let tags = case tags {
+          [] -> [component]
+          _ -> tags
+        }
+        list.map(tags, fn(tag) { #(tag, ref_to_typeref(ref_str)) })
+      }
+    }
+  })
+}
+
+fn mapping_target_name(target: String) -> String {
+  case string.contains(target, "/") {
+    True -> ref_component_name(target)
+    False -> target
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -130,17 +130,45 @@ fn check_components(components: Option(Components)) -> List(Issue) {
   }
 }
 
+/// A discriminator over `oneOf` / `anyOf` members that are all `$ref`s is
+/// generated as a tagged union. The other two shapes are not: a discriminator
+/// on a base schema that subtypes reach through `allOf` (no member list to
+/// dispatch over), and inline members (no schema name to tag them with).
 fn check_schema_discriminator(schema: Schema, name: String) -> List(Issue) {
   case schema.discriminator {
     None -> []
-    Some(_) -> [
-      Issue(
-        name: "discriminator",
-        location: "#/components/schemas/" <> name,
-        reason: "Polymorphic union narrowing via discriminator is not yet implemented; oneOf/anyOf members will be exposed without runtime tag dispatch.",
-        severity: Blocking,
-      ),
-    ]
+    Some(_) -> {
+      let members = case schema.one_of, schema.any_of {
+        [_, ..] as m, _ -> m
+        _, m -> m
+      }
+      let all_refs =
+        list.all(members, fn(m) {
+          case m {
+            Reference(_) -> True
+            Inline(_) -> False
+          }
+        })
+      case members, all_refs {
+        [_, ..], True -> []
+        [], _ -> [
+          Issue(
+            name: "discriminator",
+            location: "#/components/schemas/" <> name,
+            reason: "A discriminator without oneOf/anyOf (the allOf inheritance pattern) is not generated as a union; list the subtypes under oneOf with $ref.",
+            severity: Blocking,
+          ),
+        ]
+        _, False -> [
+          Issue(
+            name: "discriminator",
+            location: "#/components/schemas/" <> name,
+            reason: "Inline oneOf/anyOf members cannot be tagged by a discriminator; move each member to components/schemas and reference it with $ref.",
+            severity: Blocking,
+          ),
+        ]
+      }
+    }
   }
 }
 
