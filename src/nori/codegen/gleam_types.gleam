@@ -71,10 +71,17 @@ fn generate_header(ir: CodegenIR) -> String {
         True -> ["import gleam/option.{type Option, None, Some}"]
         False -> []
       }
+      // A map field is typed Dict, and its encoder walks the entries with
+      // dict.to_list and list.map.
+      let dict_imports = case uses_dict(ir) {
+        True -> ["import gleam/dict.{type Dict}", "import gleam/list"]
+        False -> []
+      }
       let lines =
         list.flatten([
           [title_comment, ""],
           prelude_import,
+          dict_imports,
           dynamic_import,
           [
             "import gleam/dynamic/decode.{type Decoder}",
@@ -106,6 +113,27 @@ fn ref_uses_option(ref: ir.TypeRef) -> Bool {
     ir.Nullable(_) | ir.Optional(_) -> True
     ir.Array(item) -> ref_uses_option(item)
     ir.Dict(k, v) -> ref_uses_option(k) || ref_uses_option(v)
+    _ -> False
+  }
+}
+
+fn uses_dict(ir: CodegenIR) -> Bool {
+  list.any(ir.types, fn(td) {
+    case td {
+      ir.RecordType(_, fields, _) ->
+        list.any(fields, fn(f) { ref_uses_dict(f.type_ref) })
+      ir.AliasType(_, ref, _) -> ref_uses_dict(ref)
+      ir.UnionType(_, members, _, _) -> list.any(members, ref_uses_dict)
+      ir.EnumType(..) -> False
+    }
+  })
+}
+
+fn ref_uses_dict(ref: ir.TypeRef) -> Bool {
+  case ref {
+    ir.Dict(_, _) -> True
+    ir.Array(item) | ir.Nullable(item) | ir.Optional(item) ->
+      ref_uses_dict(item)
     _ -> False
   }
 }
@@ -211,7 +239,7 @@ fn generate_record_type(
     fields
     |> list.map(fn(f) {
       let field_type = field_type_string(f)
-      "    " <> to_snake_case(f.name) <> ": " <> field_type
+      "    " <> naming.to_field_name(f.name) <> ": " <> field_type
     })
     |> string.join(",\n")
 
@@ -348,7 +376,7 @@ fn generate_record_decoder(name: String, fields: List(Field)) -> String {
   let field_lines =
     fields
     |> list.map(fn(f) {
-      let snake = to_snake_case(f.name)
+      let snake = naming.to_field_name(f.name)
       let decoder_expr = type_ref_decoder(f.type_ref)
       case f.required {
         True ->
@@ -373,7 +401,9 @@ fn generate_record_decoder(name: String, fields: List(Field)) -> String {
 
   let constructor_args =
     fields
-    |> list.map(fn(f) { to_snake_case(f.name) <> ": " <> to_snake_case(f.name) })
+    |> list.map(fn(f) {
+      naming.to_field_name(f.name) <> ": " <> naming.to_field_name(f.name)
+    })
     |> string.join(", ")
 
   "pub fn "
@@ -463,7 +493,7 @@ fn generate_record_encoder(name: String, fields: List(Field)) -> String {
   let field_encoders =
     fields
     |> list.map(fn(f) {
-      let snake = to_snake_case(f.name)
+      let snake = naming.to_field_name(f.name)
       let encoder_expr = type_ref_encoder("value." <> snake, f.type_ref)
       case f.required {
         True -> "    #(\"" <> f.name <> "\", " <> encoder_expr <> ")"

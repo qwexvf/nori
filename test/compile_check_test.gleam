@@ -716,6 +716,219 @@ components:
 /// A spec of 204s encodes nothing and decodes nothing, so the client must not
 /// import gleam/json — nor the types module, now that a record-typed parameter
 /// is accepted as a String.
+/// #46: a property, a path parameter, and a query parameter named after Gleam
+/// keywords. `type` is the standard member of an RFC 9457 problem.
+pub fn keyword_names_output_compiles_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Keywords
+  version: '1.0.0'
+paths:
+  /things/{type}:
+    get:
+      operationId: getThing
+      parameters:
+        - name: type
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: case
+          in: query
+          schema:
+            type: string
+        - name: use
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '400':
+          description: Problem
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+components:
+  schemas:
+    Problem:
+      type: object
+      required: ['title', 'let']
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        let:
+          type: integer
+        fn:
+          type: boolean"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let ir = ir_builder.build(doc)
+  let types = gleam_types.generate(ir)
+  // The label changes, the JSON key does not.
+  types |> string.contains("type_: Option(String)") |> should.be_true
+  types |> string.contains("decode.optional_field(\"type\"") |> should.be_true
+  types |> string.contains("#(\"let\", ") |> should.be_true
+  ir |> should_compile
+}
+
+/// #47: a map (additionalProperties) as a record field, as an optional field,
+/// inside an array, and as a whole response body.
+pub fn map_fields_output_compiles_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Maps
+  version: '1.0.0'
+paths:
+  /counts:
+    get:
+      operationId: getCounts
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: integer
+  /bags/{id}:
+    get:
+      operationId: getBag
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bag'
+components:
+  schemas:
+    Bag:
+      type: object
+      required: ['fields']
+      properties:
+        fields:
+          type: object
+          additionalProperties:
+            type: integer
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        pages:
+          type: array
+          items:
+            type: object
+            additionalProperties:
+              type: boolean"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  ir_builder.build(doc) |> should_compile
+}
+
+/// #49: nullable references (3.1 `oneOf` with null), single-member allOf, and
+/// inline objects as fields, as array items, nested, and nullable.
+pub fn inline_and_nullable_schemas_output_compiles_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Inline
+  version: '1.0.0'
+paths:
+  /msgs/{id}:
+    get:
+      operationId: getMsg
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Msg'
+components:
+  schemas:
+    Event:
+      type: object
+      required: ['id']
+      properties:
+        id:
+          type: string
+    Msg:
+      type: object
+      required: ['event', 'author']
+      properties:
+        event:
+          oneOf:
+            - $ref: '#/components/schemas/Event'
+            - type: 'null'
+        pinned:
+          anyOf:
+            - $ref: '#/components/schemas/Event'
+            - type: 'null'
+        source:
+          description: The event this came from
+          allOf:
+            - $ref: '#/components/schemas/Event'
+        author:
+          type: object
+          required: ['name']
+          properties:
+            name:
+              type: string
+            address:
+              type: object
+              properties:
+                city:
+                  type: string
+        reviewer:
+          type: [object, 'null']
+          properties:
+            name:
+              type: string
+        skills:
+          type: array
+          items:
+            type: object
+            required: ['name']
+            properties:
+              name:
+                type: string
+              years:
+                type: integer"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let ir = ir_builder.build(doc)
+  let types = gleam_types.generate(ir)
+  types |> string.contains("Dynamic") |> should.be_false
+  types |> string.contains("event: Option(Event)") |> should.be_true
+  types |> string.contains("source: Option(Event)") |> should.be_true
+  types |> string.contains("author: MsgAuthor") |> should.be_true
+  types
+  |> string.contains("address: Option(MsgAuthorAddress)")
+  |> should.be_true
+  types
+  |> string.contains("skills: Option(List(MsgSkillsItem))")
+  |> should.be_true
+  ir |> should_compile
+}
+
 pub fn client_imports_nothing_it_does_not_use_test() {
   let yaml_str =
     "openapi: '3.1.0'

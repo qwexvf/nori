@@ -202,7 +202,21 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
       resp_uses || param_uses
     })
 
+  // A map response is decoded into a Dict, which appears in the decode
+  // function's return type. A map request body is sent as json.Json, so only
+  // responses need the import.
+  let needs_dict =
+    list.any(ir.endpoints, fn(ep) {
+      list.any(ep.responses, fn(r) {
+        case r.type_ref {
+          Some(ref) -> ref_uses_dict(ref)
+          None -> False
+        }
+      })
+    })
+
   let optional_imports = [
+    #(needs_dict, "import gleam/dict.{type Dict}"),
     #(needs_dynamic, "import gleam/dynamic.{type Dynamic}"),
     #(needs_decode, "import gleam/dynamic/decode"),
     #(needs_json, "import gleam/json"),
@@ -254,6 +268,14 @@ fn ref_uses_unknown(ref: TypeRef) -> Bool {
     ir.Dict(k, v) -> ref_uses_unknown(k) || ref_uses_unknown(v)
     Nullable(inner) -> ref_uses_unknown(inner)
     Optional(inner) -> ref_uses_unknown(inner)
+    _ -> False
+  }
+}
+
+fn ref_uses_dict(ref: TypeRef) -> Bool {
+  case ref {
+    ir.Dict(_, _) -> True
+    Array(item) | Nullable(item) | Optional(item) -> ref_uses_dict(item)
     _ -> False
   }
 }
@@ -507,7 +529,7 @@ fn build_param_args(
     path_params
     |> list.map(fn(p) {
       ", "
-      <> to_snake_case(p.name)
+      <> naming.to_field_name(p.name)
       <> ": "
       <> param_type(p.type_ref, name_prefix, enum_names)
     })
@@ -517,7 +539,7 @@ fn build_param_args(
       False ->
         "Option(" <> param_type(p.type_ref, name_prefix, enum_names) <> ")"
     }
-    ", " <> to_snake_case(p.name) <> ": " <> type_str
+    ", " <> naming.to_field_name(p.name) <> ": " <> type_str
   }
   let body_arg = case body {
     Some(b) -> [
@@ -568,7 +590,7 @@ fn build_path_expr(
       list.fold(path_params, "\"" <> path <> "\"", fn(expr, p) {
         let value =
           param_to_string_expr(
-            to_snake_case(p.name),
+            naming.to_field_name(p.name),
             p.type_ref,
             name_prefix,
             enum_names,
@@ -656,7 +678,7 @@ fn build_query_section(
       let lines =
         params
         |> list.map(fn(p) {
-          let snake = to_snake_case(p.name)
+          let snake = naming.to_field_name(p.name)
           case is_array_param(p) {
             // ⚠️ One pair per element, not one pair for the list. OpenAPI's
             // default `style: form, explode: true` repeats the key, and the
@@ -742,7 +764,7 @@ type Locals {
 fn build_locals(endpoint: Endpoint) -> Locals {
   let taken =
     endpoint.parameters
-    |> list.map(fn(p) { to_snake_case(p.name) })
+    |> list.map(fn(p) { naming.to_field_name(p.name) })
 
   Locals(
     path: fresh_name("path", taken),
@@ -791,7 +813,7 @@ fn build_header_section(
 ) -> String {
   header_params
   |> list.map(fn(p) {
-    let snake = to_snake_case(p.name)
+    let snake = naming.to_field_name(p.name)
     case p.required {
       True -> {
         let value =
@@ -931,8 +953,18 @@ fn type_ref_decoder_call(ref: TypeRef, name_prefix: String) -> String {
     Primitive(ir.PInt) -> "decode.int"
     Primitive(ir.PFloat) -> "decode.float"
     Primitive(ir.PBool) -> "decode.bool"
+    Primitive(ir.PDateTime) | Primitive(ir.PDate) | ir.Literal(_) ->
+      "decode.string"
     Array(item) ->
       "decode.list(" <> type_ref_decoder_call(item, name_prefix) <> ")"
+    // The signature says Dict and Option here (type_ref_to_string), so a
+    // Dynamic decoder would not type-check against it.
+    ir.Dict(_, value) ->
+      "decode.dict(decode.string, "
+      <> type_ref_decoder_call(value, name_prefix)
+      <> ")"
+    Nullable(inner) | Optional(inner) ->
+      "decode.optional(" <> type_ref_decoder_call(inner, name_prefix) <> ")"
     _ -> "decode.dynamic"
   }
 }
