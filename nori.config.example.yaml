@@ -23,6 +23,8 @@ output:
   #   - client.gleam     — Framework-agnostic HTTP request builders + response decoders
   #   - routes.gleam     — Route union type + match_route(method, segments) pattern matcher
   #   - middleware.gleam  — Auth extractors, CORS, content-type validation (from securitySchemes)
+  #   - mcp.gleam        — MCP tool list and tools/call argument decoding, only
+  #     when an operation has an `x-mcp` extension
   #   - routes.gleam also carries a typed query-parameter reader per endpoint
   #     that declares them
   gleam:
@@ -36,6 +38,7 @@ output:
     # dirs:
     #   routes: ./backend/src/generated
     #   middleware: ./backend/src/generated
+    #   mcp: ./backend/src/generated
     #   client: ./frontend/src/generated
     #
     # Module path the other files import `types` by. Needed when `types` lands in

@@ -4,6 +4,8 @@
 
 ### Breaking
 
+- `ir.Endpoint` has a new `extensions` field holding the operation's `x-*`
+  extensions. Code that builds endpoints adds `extensions: dict.new()`.
 - `ir.Field` and `ir.EndpointParam` have a new `constraints: ir.Constraints`
   field. Code that builds them adds `constraints: ir.no_constraints()`.
 - An operation's inline object request or response body is now a named record
@@ -16,6 +18,11 @@
 
 ### Added
 
+- MCP tools (#52). Operations marked with `x-mcp: { tool, scopes, confirm }`
+  are generated into `mcp.gleam`: the tool list with `inputSchema` and
+  `outputSchema` built from the IR, a `ToolCall` type, and `decode_call` for
+  `tools/call` arguments, which reuses the types' decoders, the routes' query
+  records and the constraint checks.
 - Validation constraints (#3). The IR carries `minimum`, `maximum`,
   `exclusiveMinimum`, `exclusiveMaximum`, `minLength`, `maxLength`, `pattern`,
   `minItems`, `maxItems` and an array's element constraints. The Gleam record

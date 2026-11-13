@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -78,6 +79,7 @@ fn sample_ir() -> ir.CodegenIR {
         ],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
       Endpoint(
         operation_id: "get_user_by_id",
@@ -107,6 +109,7 @@ fn sample_ir() -> ir.CodegenIR {
         ],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
       Endpoint(
         operation_id: "create_user",
@@ -131,6 +134,7 @@ fn sample_ir() -> ir.CodegenIR {
         ],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
     ],
     security_schemes: [],
@@ -264,6 +268,7 @@ fn freeform_body_ir() -> ir.CodegenIR {
         responses: [],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
     ],
     security_schemes: [],

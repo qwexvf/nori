@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -88,6 +89,7 @@ fn sample_ir() -> CodegenIR {
         ],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
       Endpoint(
         operation_id: "create_pet",
@@ -112,6 +114,7 @@ fn sample_ir() -> CodegenIR {
         ],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
       Endpoint(
         operation_id: "show_pet_by_id",
@@ -141,6 +144,7 @@ fn sample_ir() -> CodegenIR {
         ],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
     ],
     security_schemes: [],
@@ -449,6 +453,7 @@ pub fn references_respects_identifier_boundaries_test() {
           ],
           deprecated: False,
           security: None,
+          extensions: dict.new(),
         ),
       ],
     )

@@ -47,7 +47,7 @@ fn endpoints_with_query(endpoints: List(Endpoint)) -> List(Endpoint) {
   list.filter(endpoints, fn(ep) { query_params(ep) != [] })
 }
 
-fn query_params(ep: Endpoint) -> List(ir.EndpointParam) {
+pub fn query_params(ep: Endpoint) -> List(ir.EndpointParam) {
   list.filter(ep.parameters, fn(p) { p.location == ir.QueryParam })
 }
 
@@ -534,7 +534,7 @@ pub type QueryError {
   InvalidQueryParam(name: String, expected: String)
 }"
 
-fn query_record_name(ep: Endpoint) -> String {
+pub fn query_record_name(ep: Endpoint) -> String {
   to_pascal_case(ep.operation_id) <> "Query"
 }
 
@@ -544,7 +544,7 @@ fn query_record_name(ep: Endpoint) -> String {
 /// its type here would emit a call that was never generated; those stay `String`.
 /// Empty when there is no types import to reference (`module_prefix` empty),
 /// because the names would not resolve.
-fn query_enum_names(ir: CodegenIR, module_prefix: String) -> List(String) {
+pub fn query_enum_names(ir: CodegenIR, module_prefix: String) -> List(String) {
   case module_prefix {
     "" -> []
     _ ->
@@ -803,7 +803,7 @@ fn render_helpers(body: String) -> String {
   comment <> "\n\n" <> code
 }
 
-fn query_enum_of(
+pub fn query_enum_of(
   p: ir.EndpointParam,
   enums: List(String),
 ) -> option.Option(String) {

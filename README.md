@@ -7,7 +7,7 @@ OpenAPI 3.0 / 3.1 code generation for Gleam. nori parses a YAML or JSON spec int
 
 Built-in generators:
 
-- **Gleam:** types with JSON decoders/encoders, a route matcher, HTTP request builders, and Wisp middleware (auth, CORS, content-type).
+- **Gleam:** types with JSON decoders/encoders, a route matcher, HTTP request builders, Wisp middleware (auth, CORS, content-type), and MCP tool definitions for operations marked `x-mcp`.
 - **TypeScript:** types, a fetch client, React Query hooks and SWR hooks. You can change the output with [handles](https://hexdocs.pm/handles/) templates. _Deprecated: I'm phasing out the TypeScript targets so nori can focus on Gleam. They still run, but a future release will remove them._
 
 YAML parsing uses [taffy](https://github.com/qwexvf/taffy).
@@ -75,8 +75,8 @@ output:
 
 ### Splitting the Gleam output across projects
 
-The four generated Gleam modules do not all belong to the same place: `types` is
-shared, `routes` and `middleware` are the backend's, `client` is the frontend's.
+The generated Gleam modules do not all belong to the same place: `types` is
+shared, `routes`, `middleware` and `mcp` are the backend's, `client` is the frontend's.
 `dirs` overrides the directory per file, and `types_module` is the module path
 the others import `types` by when it lands in another project.
 
@@ -107,6 +107,22 @@ output:
 
 See `nori.config.example.yaml` for every option.
 
+### MCP tools
+
+Mark an operation with `x-mcp` to expose it as an MCP tool as well:
+
+```yaml
+/threads/{threadId}/messages:
+  post:
+    operationId: sendMessage
+    x-mcp:
+      tool: send_message       # defaults to the snake_case operationId
+      scopes: [messages:write] # what the caller's token needs
+      confirm: true            # has side effects: run it in two steps
+```
+
+`mcp.gleam` then has `tools()` (name, title, description, `inputSchema`, `outputSchema`, scopes, `confirm`), `tool_to_json` for a `tools/list` entry, and `decode_call(name, arguments)`, which returns a `ToolCall` such as `SendMessage(thread_id: "t1", body: types.SendMessageRequest(..))`. Arguments are path and query parameters by their spec names plus the request body under `body`; query parameters decode into the same `routes.*Query` record the HTTP reader returns, with the same constraint checks. Serving `/mcp`, checking scopes and honouring `confirm` stay in your application. Only a response that is a record gets an `outputSchema`, since MCP's structured content is an object; header and cookie parameters are not part of a tool.
+
 ## What it generates
 
 **Gleam** (server-side):
@@ -116,6 +132,8 @@ See `nori.config.example.yaml` for every option.
   query-parameter reader for each endpoint that has query parameters
 - `client.gleam`: typed request builders
 - `middleware.gleam`: auth extractors, CORS, content-type validation
+- `mcp.gleam`, only when an operation has `x-mcp`: the MCP tool list and a
+  decoder for `tools/call` arguments (below)
 
 Query parameters are typed in both directions. For
 `GET /issues?status=&limit=`:

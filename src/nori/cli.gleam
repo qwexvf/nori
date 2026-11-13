@@ -17,6 +17,7 @@ import glint
 import nori/bundler
 import nori/capability
 import nori/codegen/gleam_client
+import nori/codegen/gleam_mcp
 import nori/codegen/gleam_middleware
 import nori/codegen/gleam_routes
 import nori/codegen/gleam_types
@@ -512,6 +513,17 @@ fn generate_gleam(
       ),
     ]
   }
+  // Only a spec that marks operations with `x-mcp` gets an MCP module; one
+  // without would hold an empty tool list and unused imports.
+  let mcp_files = case gleam_mcp.has_tools(codegen_ir) {
+    True -> [
+      plugin.GeneratedFile(
+        path: file_dir(tc, "mcp") <> "/" <> suffix(tc, "mcp", ".gleam"),
+        content: gleam_mcp.generate(codegen_ir, types_module, routes_module),
+      ),
+    ]
+    False -> []
+  }
   list.append(types_files, [
     plugin.GeneratedFile(
       path: file_dir(tc, "client") <> "/" <> suffix(tc, "client", ".gleam"),
@@ -528,6 +540,7 @@ fn generate_gleam(
       content: gleam_middleware.generate(codegen_ir, routes_module),
     ),
   ])
+  |> list.append(mcp_files)
 }
 
 /// Where one generated file goes: its `dirs` entry, or the target's `dir`.
@@ -536,7 +549,7 @@ fn file_dir(tc: TargetConfig, name: String) -> String {
 }
 
 /// The only keys `dirs` accepts, which is also the set of generated Gleam files.
-const gleam_file_names = ["types", "routes", "client", "middleware"]
+const gleam_file_names = ["types", "routes", "client", "middleware", "mcp"]
 
 /// Names in `dirs` that are not generated files.
 ///

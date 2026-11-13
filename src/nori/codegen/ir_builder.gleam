@@ -914,6 +914,7 @@ fn build_endpoint(
     responses: responses,
     deprecated: deprecated,
     security: endpoint_security,
+    extensions: op.extensions,
   )
 }
 

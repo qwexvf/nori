@@ -399,7 +399,7 @@ fn generate_record_decoder(name: String, fields: List(Field)) -> String {
     fields
     |> list.map(fn(f) {
       let snake = naming.to_field_name(f.name)
-      let decoder_expr = constrained_decoder(f.type_ref, f.constraints)
+      let decoder_expr = constrained_decoder(f.type_ref, f.constraints, "")
       case f.required {
         True ->
           "  use "
@@ -445,14 +445,24 @@ fn generate_record_decoder(name: String, fields: List(Field)) -> String {
 /// The decoder for `ref`, rejecting values its constraints rule out. An
 /// optional or nullable value is checked when present; an array's count is
 /// checked on the list and its element constraints on each element.
-fn constrained_decoder(ref: TypeRef, c: ir.Constraints) -> String {
+/// `value_decoder` for code outside the types module: named types are called
+/// through `qualifier` (`"types."`), and a constraint check still applies.
+pub fn value_decoder(
+  ref: TypeRef,
+  c: ir.Constraints,
+  qualifier: String,
+) -> String {
+  constrained_decoder(ref, c, qualifier)
+}
+
+fn constrained_decoder(ref: TypeRef, c: ir.Constraints, q: String) -> String {
   case ref {
     Nullable(inner) | Optional(inner) ->
-      "decode.optional(" <> constrained_decoder(inner, c) <> ")"
+      "decode.optional(" <> constrained_decoder(inner, c, q) <> ")"
     Array(item) -> {
       let item_constraints = option.unwrap(c.items, ir.no_constraints())
       checked_decoder(
-        "decode.list(" <> constrained_decoder(item, item_constraints) <> ")",
+        "decode.list(" <> constrained_decoder(item, item_constraints, q) <> ")",
         gleam_constraints.count_checks(c, "v"),
         "array",
       )
@@ -463,7 +473,7 @@ fn constrained_decoder(ref: TypeRef, c: ir.Constraints) -> String {
         gleam_constraints.scalar_checks(c, p, "v"),
         gleam_constraints.type_name(p),
       )
-    _ -> type_ref_decoder(ref)
+    _ -> type_ref_decoder(ref, q)
   }
 }
 
@@ -484,15 +494,15 @@ fn checked_decoder(
   }
 }
 
-fn type_ref_decoder(ref: TypeRef) -> String {
+fn type_ref_decoder(ref: TypeRef, q: String) -> String {
   case ref {
-    Named(name) -> to_snake_case(name) <> "_decoder()"
+    Named(name) -> q <> to_snake_case(name) <> "_decoder()"
     Primitive(p) -> primitive_decoder(p)
-    Array(item) -> "decode.list(" <> type_ref_decoder(item) <> ")"
+    Array(item) -> "decode.list(" <> type_ref_decoder(item, q) <> ")"
     Dict(_, value) ->
-      "decode.dict(decode.string, " <> type_ref_decoder(value) <> ")"
-    Nullable(inner) -> "decode.optional(" <> type_ref_decoder(inner) <> ")"
-    Optional(inner) -> "decode.optional(" <> type_ref_decoder(inner) <> ")"
+      "decode.dict(decode.string, " <> type_ref_decoder(value, q) <> ")"
+    Nullable(inner) -> "decode.optional(" <> type_ref_decoder(inner, q) <> ")"
+    Optional(inner) -> "decode.optional(" <> type_ref_decoder(inner, q) <> ")"
     Literal(_) -> "decode.string"
     Unknown -> "decode.dynamic"
   }
