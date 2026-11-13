@@ -81,6 +81,44 @@ pub type Field {
     description: Option(String),
     read_only: Bool,
     write_only: Bool,
+    constraints: Constraints,
+  )
+}
+
+/// Validation keywords from the schema a field or parameter was built from.
+///
+/// They apply to the value itself: for a nullable or optional value, to the
+/// value when present; for an array, `min_items`/`max_items` count the list and
+/// `items` holds the constraints of each element. Bounds are kept as written,
+/// so a generator decides how to compare an integer with a fractional bound.
+pub type Constraints {
+  Constraints(
+    minimum: Option(Float),
+    maximum: Option(Float),
+    exclusive_minimum: Option(Float),
+    exclusive_maximum: Option(Float),
+    min_length: Option(Int),
+    max_length: Option(Int),
+    pattern: Option(String),
+    min_items: Option(Int),
+    max_items: Option(Int),
+    items: Option(Constraints),
+  )
+}
+
+/// Constraints with nothing set.
+pub fn no_constraints() -> Constraints {
+  Constraints(
+    minimum: None,
+    maximum: None,
+    exclusive_minimum: None,
+    exclusive_maximum: None,
+    min_length: None,
+    max_length: None,
+    pattern: None,
+    min_items: None,
+    max_items: None,
+    items: None,
   )
 }
 
@@ -158,6 +196,7 @@ pub type EndpointParam {
     type_ref: TypeRef,
     required: Bool,
     description: Option(String),
+    constraints: Constraints,
   )
 }
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- `ir.Field` and `ir.EndpointParam` have a new `constraints: ir.Constraints`
+  field. Code that builds them adds `constraints: ir.no_constraints()`.
+
+### Added
+
+- Validation constraints (#3). The IR carries `minimum`, `maximum`,
+  `exclusiveMinimum`, `exclusiveMaximum`, `minLength`, `maxLength`, `pattern`,
+  `minItems`, `maxItems` and an array's element constraints. The Gleam record
+  decoders and query readers reject values outside them (string length in code
+  points). `pattern`, `multipleOf` and `uniqueItems` are not enforced.
+
 ## v2.0.0 - 2026-08-25
 
 ### Breaking

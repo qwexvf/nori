@@ -1073,3 +1073,111 @@ paths:
   |> string.contains("fn(String) -> Result(Nil, String)")
   |> should.be_true
 }
+
+/// #3: constraints reject out-of-range values in a body decoder and in a query
+/// reader, and accept the boundaries themselves.
+pub fn constraints_behave_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Constraints
+  version: '1.0.0'
+paths:
+  /jobs:
+    get:
+      operationId: searchJobs
+      parameters:
+        - { name: days, in: query, schema: { type: array, maxItems: 2, items: { type: integer, minimum: 1, maximum: 5 } } }
+        - { name: rate_min, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: q, in: query, schema: { type: string, maxLength: 3 } }
+        - { name: score, in: query, schema: { type: number, exclusiveMaximum: 1.5 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+components:
+  schemas:
+    Message:
+      type: object
+      required: [text, slots]
+      properties:
+        text: { type: string, minLength: 1, maxLength: 4 }
+        confidence: { type: [integer, 'null'], minimum: 0, maximum: 100 }
+        slots: { type: array, minItems: 1, items: { type: integer, minimum: 1 } }"
+
+  let main_source =
+    "import generated/routes
+import generated/types
+import gleam/io
+import gleam/json
+import gleam/string
+
+fn body(label: String, input: String) -> Nil {
+  io.println(label <> \"=\" <> string.inspect(json.parse(input, types.message_decoder())))
+}
+
+fn query(label: String, params: List(#(String, String))) -> Nil {
+  io.println(label <> \"=\" <> string.inspect(routes.search_jobs_query(params)))
+}
+
+pub fn main() {
+  body(\"ok\", \"{\\\"text\\\":\\\"日本語だ\\\",\\\"confidence\\\":100,\\\"slots\\\":[1]}\")
+  body(\"empty_text\", \"{\\\"text\\\":\\\"\\\",\\\"slots\\\":[1]}\")
+  body(\"long_text\", \"{\\\"text\\\":\\\"abcde\\\",\\\"slots\\\":[1]}\")
+  body(\"null_conf\", \"{\\\"text\\\":\\\"a\\\",\\\"confidence\\\":null,\\\"slots\\\":[1]}\")
+  body(\"high_conf\", \"{\\\"text\\\":\\\"a\\\",\\\"confidence\\\":101,\\\"slots\\\":[1]}\")
+  body(\"no_slots\", \"{\\\"text\\\":\\\"a\\\",\\\"slots\\\":[]}\")
+  body(\"bad_slot\", \"{\\\"text\\\":\\\"a\\\",\\\"slots\\\":[0]}\")
+  query(\"q_ok\", [#(\"days\", \"1\"), #(\"days\", \"5\"), #(\"rate_min\", \"0\"), #(\"q\", \"abc\"), #(\"score\", \"1.4\")])
+  query(\"day_high\", [#(\"days\", \"6\")])
+  query(\"too_many_days\", [#(\"days\", \"1\"), #(\"days\", \"2\"), #(\"days\", \"3\")])
+  query(\"rate_neg\", [#(\"rate_min\", \"-1\")])
+  query(\"q_long\", [#(\"q\", \"abcd\")])
+  query(\"score_edge\", [#(\"score\", \"1.5\")])
+}
+"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+
+  // Four code points, more than four bytes: length is not counted in bytes.
+  assert_line("ok=Ok(Message(")
+  assert_line(
+    "empty_text=Error(UnableToDecode([DecodeError(\"string length >= 1 and length <= 4\"",
+  )
+  assert_line(
+    "long_text=Error(UnableToDecode([DecodeError(\"string length >= 1 and length <= 4\"",
+  )
+  assert_line("null_conf=Ok(Message(")
+  assert_line(
+    "high_conf=Error(UnableToDecode([DecodeError(\"integer >= 0 and <= 100\"",
+  )
+  assert_line("no_slots=Error(UnableToDecode([DecodeError(\"array items >= 1\"")
+  assert_line("bad_slot=Error(UnableToDecode([DecodeError(\"integer >= 1\"")
+  assert_line(
+    "q_ok=Ok(SearchJobsQuery([1, 5], Some(0), Some(\"abc\"), Some(1.4)))",
+  )
+  assert_line(
+    "day_high=Error(InvalidQueryParam(\"days\", \"integer >= 1 and <= 5\"))",
+  )
+  assert_line(
+    "too_many_days=Error(InvalidQueryParam(\"days\", \"array items <= 2\"))",
+  )
+  assert_line(
+    "rate_neg=Error(InvalidQueryParam(\"rate_min\", \"integer >= 0\"))",
+  )
+  assert_line("q_long=Error(InvalidQueryParam(\"q\", \"string length <= 3\"))")
+  assert_line(
+    "score_edge=Error(InvalidQueryParam(\"score\", \"number < 1.5\"))",
+  )
+}

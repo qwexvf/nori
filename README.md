@@ -225,9 +225,10 @@ The capability check catches these, and generation stops unless you pass `--allo
 - `multipart/form-data` and `application/x-www-form-urlencoded` request bodies ([#13](https://github.com/qwexvf/nori/issues/13))
 - Parameter styles `deepObject`, `pipeDelimited`, `spaceDelimited`
 
+Validation keywords on a property or a query parameter are checked by the generated Gleam record decoders and query readers: `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `minLength`, `maxLength` (in code points), `minItems`, `maxItems`, and the same on an array's inline `items`. Not checked: `pattern`, `multipleOf`, `uniqueItems`, constraints on a `$ref`'d schema, and path parameters.
+
 Tracked roadmap:
 
-- Schema validation constraints in decoder ([#3](https://github.com/qwexvf/nori/issues/3))
 - Zod / Valibot validation generation ([#7](https://github.com/qwexvf/nori/issues/7))
 
 ## Examples
