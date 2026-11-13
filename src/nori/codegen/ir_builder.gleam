@@ -21,9 +21,40 @@ import nori/response.{type Response}
 import nori/schema.{type Schema}
 import nori/security
 
+/// Choices that change the shape of the generated types. The defaults keep the
+/// output of earlier releases, so turning one on is a change a consumer opts in
+/// to.
+pub type BuildOptions {
+  BuildOptions(
+    /// Give an inline `enum` on a property (or an array's items) a named enum
+    /// type, instead of `String`.
+    inline_enums: Bool,
+    /// A property that is optional and also nullable becomes one `Option`
+    /// instead of `Option(Option(_))`. Absent and `null` both decode to `None`,
+    /// so the type no longer tells them apart.
+    single_option: Bool,
+  )
+}
+
+pub fn default_options() -> BuildOptions {
+  BuildOptions(inline_enums: False, single_option: False)
+}
+
 /// Builds a CodegenIR from a parsed OpenAPI Document.
 pub fn build(doc: Document) -> ir.CodegenIR {
-  let types = build_types(doc)
+  build_with(doc, default_options())
+}
+
+/// Builds a CodegenIR with the given options.
+pub fn build_with(doc: Document, options: BuildOptions) -> ir.CodegenIR {
+  let types =
+    build_types(doc, options.inline_enums)
+    |> fn(types) {
+      case options.single_option {
+        True -> list.map(types, single_option)
+        False -> types
+      }
+    }
   let endpoints = build_endpoints(doc)
   let base_url = extract_base_url(doc)
 
@@ -56,11 +87,11 @@ fn extract_base_url(doc: Document) -> Option(String) {
 // Type building from components/schemas
 // ---------------------------------------------------------------------------
 
-fn build_types(doc: Document) -> List(ir.TypeDef) {
+fn build_types(doc: Document, inline_enums: Bool) -> List(ir.TypeDef) {
   case doc.components {
     option.None -> []
     option.Some(components) -> {
-      let schemas = hoist_inline_objects(components.schemas)
+      let schemas = hoist_inline_objects(components.schemas, inline_enums)
       dict.to_list(schemas)
       |> list.map(fn(pair) {
         let #(name, schema) = pair
@@ -347,9 +378,10 @@ fn is_null_schema(member: reference.Ref(Schema)) -> Bool {
 /// object becomes a nullable reference. A name already taken gets a number.
 fn hoist_inline_objects(
   schemas: dict.Dict(String, Schema),
+  inline_enums: Bool,
 ) -> dict.Dict(String, Schema) {
   dict.fold(schemas, schemas, fn(acc, name, s) {
-    let #(hoisted, acc) = hoist_schema(name, s, acc)
+    let #(hoisted, acc) = hoist_schema(name, s, acc, inline_enums)
     dict.insert(acc, name, hoisted)
   })
 }
@@ -358,15 +390,17 @@ fn hoist_schema(
   owner: String,
   s: Schema,
   acc: dict.Dict(String, Schema),
+  inline_enums: Bool,
 ) -> #(Schema, dict.Dict(String, Schema)) {
   let #(properties, acc) =
     dict.fold(s.properties, #(dict.new(), acc), fn(state, field, ref) {
-      let #(hoisted, acc) = hoist_ref(owner <> "_" <> field, ref, state.1)
+      let #(hoisted, acc) =
+        hoist_ref(owner <> "_" <> field, ref, state.1, inline_enums)
       #(dict.insert(state.0, field, hoisted), acc)
     })
   let #(items, acc) = case s.items {
     option.Some(ref) -> {
-      let #(hoisted, acc) = hoist_ref(owner <> "_item", ref, acc)
+      let #(hoisted, acc) = hoist_ref(owner <> "_item", ref, acc, inline_enums)
       #(option.Some(hoisted), acc)
     }
     option.None -> #(option.None, acc)
@@ -377,7 +411,7 @@ fn hoist_schema(
     list.fold(s.all_of, #([], acc), fn(state, member) {
       case member {
         reference.Inline(sub) -> {
-          let #(hoisted, acc) = hoist_schema(owner, sub, state.1)
+          let #(hoisted, acc) = hoist_schema(owner, sub, state.1, inline_enums)
           #([reference.Inline(hoisted), ..state.0], acc)
         }
         reference.Reference(_) -> #([member, ..state.0], state.1)
@@ -398,15 +432,27 @@ fn hoist_ref(
   base_name: String,
   ref: reference.Ref(Schema),
   acc: dict.Dict(String, Schema),
+  inline_enums: Bool,
 ) -> #(reference.Ref(Schema), dict.Dict(String, Schema)) {
   case ref {
     reference.Reference(_) -> #(ref, acc)
     reference.Inline(sub) ->
       case inline_object_kind(sub) {
-        NotAnObject -> {
-          let #(hoisted, acc) = hoist_schema(base_name, sub, acc)
-          #(reference.Inline(hoisted), acc)
-        }
+        NotAnObject ->
+          case inline_enums && is_string_enum(sub) {
+            True -> {
+              let name = unused_name(base_name, acc, 1)
+              #(
+                reference.Reference("#/components/schemas/" <> name),
+                dict.insert(acc, name, sub),
+              )
+            }
+            False -> {
+              let #(hoisted, acc) =
+                hoist_schema(base_name, sub, acc, inline_enums)
+              #(reference.Inline(hoisted), acc)
+            }
+          }
         PlainObject | NullableObject -> {
           let name = unused_name(base_name, acc, 1)
           let object =
@@ -417,7 +463,7 @@ fn hoist_ref(
           // Reserve the name before descending, so a nested object cannot
           // take it.
           let acc = dict.insert(acc, name, object)
-          let #(hoisted, acc) = hoist_schema(name, object, acc)
+          let #(hoisted, acc) = hoist_schema(name, object, acc, inline_enums)
           let acc = dict.insert(acc, name, hoisted)
           let named = reference.Reference("#/components/schemas/" <> name)
           case inline_object_kind(sub) {
@@ -441,6 +487,36 @@ fn hoist_ref(
           }
         }
       }
+  }
+}
+
+/// A string enum. Integer enums and nullable enums keep their current type.
+fn is_string_enum(s: Schema) -> Bool {
+  case s.enum_values, s.schema_type {
+    option.Some([_, ..]), option.None -> True
+    option.Some([_, ..]), option.Some(schema.SingleType(schema.TypeString)) ->
+      True
+    _, _ -> False
+  }
+}
+
+/// `Option(Option(T))` from an optional field whose type is also nullable
+/// becomes `Option(T)`. The record decoder already reads an optional field with
+/// `decode.optional`, so `null` still decodes, to `None`.
+fn single_option(td: ir.TypeDef) -> ir.TypeDef {
+  case td {
+    ir.RecordType(name, fields, description) ->
+      ir.RecordType(
+        name,
+        list.map(fields, fn(f) {
+          case f.required, f.type_ref {
+            False, ir.Nullable(inner) -> ir.Field(..f, type_ref: inner)
+            _, _ -> f
+          }
+        }),
+        description,
+      )
+    _ -> td
   }
 }
 
