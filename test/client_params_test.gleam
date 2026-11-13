@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/list
 import gleam/option.{None}
 import gleam/string
@@ -20,6 +21,7 @@ fn param(
     type_ref: type_ref,
     required: True,
     description: None,
+    constraints: ir.no_constraints(),
   )
 }
 
@@ -45,6 +47,7 @@ fn client_ir(
         responses: [],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
     ],
     security_schemes: [],
@@ -126,6 +129,7 @@ pub fn client_non_enum_named_param_untouched_test() {
           description: None,
           read_only: False,
           write_only: False,
+          constraints: ir.no_constraints(),
         ),
       ],
       description: None,

@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -27,6 +28,7 @@ fn sample_ir() -> CodegenIR {
             description: None,
             read_only: False,
             write_only: False,
+            constraints: ir.no_constraints(),
           ),
           Field(
             name: "name",
@@ -35,6 +37,7 @@ fn sample_ir() -> CodegenIR {
             description: Some("The pet name"),
             read_only: False,
             write_only: False,
+            constraints: ir.no_constraints(),
           ),
           Field(
             name: "tag",
@@ -43,6 +46,7 @@ fn sample_ir() -> CodegenIR {
             description: None,
             read_only: False,
             write_only: False,
+            constraints: ir.no_constraints(),
           ),
         ],
         description: Some("A pet in the store"),
@@ -71,6 +75,7 @@ fn sample_ir() -> CodegenIR {
             type_ref: Primitive(ir.PInt),
             required: False,
             description: None,
+            constraints: ir.no_constraints(),
           ),
         ],
         request_body: None,
@@ -84,6 +89,7 @@ fn sample_ir() -> CodegenIR {
         ],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
       Endpoint(
         operation_id: "create_pet",
@@ -108,6 +114,7 @@ fn sample_ir() -> CodegenIR {
         ],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
       Endpoint(
         operation_id: "show_pet_by_id",
@@ -123,6 +130,7 @@ fn sample_ir() -> CodegenIR {
             type_ref: Primitive(ir.PString),
             required: True,
             description: None,
+            constraints: ir.no_constraints(),
           ),
         ],
         request_body: None,
@@ -136,6 +144,7 @@ fn sample_ir() -> CodegenIR {
         ],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
     ],
     security_schemes: [],
@@ -430,6 +439,7 @@ pub fn references_respects_identifier_boundaries_test() {
               type_ref: Primitive(ir.PString),
               required: True,
               description: None,
+              constraints: ir.no_constraints(),
             ),
           ],
           request_body: None,
@@ -443,6 +453,7 @@ pub fn references_respects_identifier_boundaries_test() {
           ],
           deprecated: False,
           security: None,
+          extensions: dict.new(),
         ),
       ],
     )

@@ -7,6 +7,7 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import nori/codegen/gleam_constraints
 import nori/codegen/ir.{
   type CodegenIR, type EnumVariant, type Field, type PrimitiveType, type TypeDef,
   type TypeRef, AliasType, Array, Dict, EnumType, Literal, Named, Nullable,
@@ -17,7 +18,6 @@ import nori/codegen/naming
 
 /// Generates a complete Gleam module string from the CodegenIR.
 pub fn generate(ir: CodegenIR) -> String {
-  let header = generate_header(ir)
   let type_defs =
     ir.types
     |> list.map(generate_type_def)
@@ -32,6 +32,14 @@ pub fn generate(ir: CodegenIR) -> String {
     |> list.map(generate_encoder)
     |> list.filter(fn(s) { s != "" })
     |> string.join("\n\n")
+  // Constraint checks call list.length and string.to_utf_codepoints; whether
+  // any were emitted is only known once the decoders exist.
+  let header =
+    generate_header(
+      ir,
+      string.contains(decoders, "list.length("),
+      string.contains(decoders, "string.to_utf_codepoints("),
+    )
 
   string.join([header, "", type_defs, "", decoders, "", encoders, ""], "\n")
 }
@@ -45,7 +53,11 @@ pub fn to_snake_case(name: String) -> String {
 // Header generation
 // ---------------------------------------------------------------------------
 
-fn generate_header(ir: CodegenIR) -> String {
+fn generate_header(
+  ir: CodegenIR,
+  checks_use_list: Bool,
+  checks_use_string: Bool,
+) -> String {
   let title_comment = "//// Generated from " <> ir.title <> " v" <> ir.version
 
   // For specs with no named schemas, skip the codec imports entirely so the
@@ -74,7 +86,15 @@ fn generate_header(ir: CodegenIR) -> String {
       // A map field is typed Dict, and its encoder walks the entries with
       // dict.to_list and list.map.
       let dict_imports = case uses_dict(ir) {
-        True -> ["import gleam/dict.{type Dict}", "import gleam/list"]
+        True -> ["import gleam/dict.{type Dict}"]
+        False -> []
+      }
+      let list_import = case uses_dict(ir) || checks_use_list {
+        True -> ["import gleam/list"]
+        False -> []
+      }
+      let string_import = case checks_use_string {
+        True -> ["import gleam/string"]
         False -> []
       }
       let lines =
@@ -88,6 +108,8 @@ fn generate_header(ir: CodegenIR) -> String {
             "import gleam/json.{type Json}",
           ],
           option_import,
+          list_import,
+          string_import,
         ])
       string.join(lines, "\n")
     }
@@ -501,7 +523,7 @@ fn generate_record_decoder(name: String, fields: List(Field)) -> String {
     fields
     |> list.map(fn(f) {
       let snake = naming.to_field_name(f.name)
-      let decoder_expr = type_ref_decoder(f.type_ref)
+      let decoder_expr = constrained_decoder(f.type_ref, f.constraints, "")
       case f.required {
         True ->
           "  use "
@@ -544,15 +566,67 @@ fn generate_record_decoder(name: String, fields: List(Field)) -> String {
   <> "))\n}"
 }
 
-fn type_ref_decoder(ref: TypeRef) -> String {
+/// The decoder for `ref`, rejecting values its constraints rule out. An
+/// optional or nullable value is checked when present; an array's count is
+/// checked on the list and its element constraints on each element.
+/// `value_decoder` for code outside the types module: named types are called
+/// through `qualifier` (`"types."`), and a constraint check still applies.
+pub fn value_decoder(
+  ref: TypeRef,
+  c: ir.Constraints,
+  qualifier: String,
+) -> String {
+  constrained_decoder(ref, c, qualifier)
+}
+
+fn constrained_decoder(ref: TypeRef, c: ir.Constraints, q: String) -> String {
   case ref {
-    Named(name) -> to_snake_case(name) <> "_decoder()"
+    Nullable(inner) | Optional(inner) ->
+      "decode.optional(" <> constrained_decoder(inner, c, q) <> ")"
+    Array(item) -> {
+      let item_constraints = option.unwrap(c.items, ir.no_constraints())
+      checked_decoder(
+        "decode.list(" <> constrained_decoder(item, item_constraints, q) <> ")",
+        gleam_constraints.count_checks(c, "v"),
+        "array",
+      )
+    }
+    Primitive(p) ->
+      checked_decoder(
+        primitive_decoder(p),
+        gleam_constraints.scalar_checks(c, p, "v"),
+        gleam_constraints.type_name(p),
+      )
+    _ -> type_ref_decoder(ref, q)
+  }
+}
+
+fn checked_decoder(
+  base: String,
+  checks: List(gleam_constraints.Check),
+  type_name: String,
+) -> String {
+  case checks {
+    [] -> base
+    _ ->
+      base
+      <> " |> decode.then(fn(v) { case "
+      <> gleam_constraints.condition(checks)
+      <> " { True -> decode.success(v) False -> decode.failure(v, \""
+      <> gleam_constraints.describe(type_name, checks)
+      <> "\") } })"
+  }
+}
+
+fn type_ref_decoder(ref: TypeRef, q: String) -> String {
+  case ref {
+    Named(name) -> q <> to_snake_case(name) <> "_decoder()"
     Primitive(p) -> primitive_decoder(p)
-    Array(item) -> "decode.list(" <> type_ref_decoder(item) <> ")"
+    Array(item) -> "decode.list(" <> type_ref_decoder(item, q) <> ")"
     Dict(_, value) ->
-      "decode.dict(decode.string, " <> type_ref_decoder(value) <> ")"
-    Nullable(inner) -> "decode.optional(" <> type_ref_decoder(inner) <> ")"
-    Optional(inner) -> "decode.optional(" <> type_ref_decoder(inner) <> ")"
+      "decode.dict(decode.string, " <> type_ref_decoder(value, q) <> ")"
+    Nullable(inner) -> "decode.optional(" <> type_ref_decoder(inner, q) <> ")"
+    Optional(inner) -> "decode.optional(" <> type_ref_decoder(inner, q) <> ")"
     Literal(_) -> "decode.string"
     Unknown -> "decode.dynamic"
   }
