@@ -663,3 +663,171 @@ components:
   |> list.sort(string.compare)
   |> should.equal(["a", "b"])
 }
+
+/// #3: a field's and a parameter's validation keywords reach the IR, with an
+/// array's element constraints under `items`.
+pub fn constraints_reach_the_ir_test() {
+  let assert Ok(doc) =
+    yaml.parse_yaml(
+      "openapi: '3.1.0'
+info: { title: t, version: '1' }
+paths:
+  /jobs:
+    get:
+      operationId: searchJobs
+      parameters:
+        - { name: days, in: query, schema: { type: array, maxItems: 5, items: { type: integer, minimum: 1 } } }
+      responses:
+        '204': { description: OK }
+components:
+  schemas:
+    Message:
+      type: object
+      properties:
+        text: { type: string, minLength: 1, maxLength: 4000, pattern: '^a' }",
+    )
+  let result = ir_builder.build(doc)
+  let assert [text] = record_fields(result, "Message")
+  text.constraints
+  |> should.equal(
+    ir.Constraints(
+      ..ir.no_constraints(),
+      min_length: option.Some(1),
+      max_length: option.Some(4000),
+      pattern: option.Some("^a"),
+    ),
+  )
+  let assert [ep] = result.endpoints
+  let assert [days] = ep.parameters
+  days.constraints
+  |> should.equal(
+    ir.Constraints(
+      ..ir.no_constraints(),
+      max_items: option.Some(5),
+      items: option.Some(
+        ir.Constraints(..ir.no_constraints(), minimum: option.Some(1.0)),
+      ),
+    ),
+  )
+}
+
+/// #58: inline object bodies get names from the operation, so they decode into
+/// records instead of Dynamic.
+pub fn inline_operation_bodies_are_named_test() {
+  let assert Ok(doc) =
+    yaml.parse_yaml(
+      "openapi: '3.1.0'
+info: { title: t, version: '1' }
+paths:
+  /messages:
+    post:
+      operationId: sendMessage
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { text: { type: string } }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { id: { type: string } }
+        '422':
+          description: Bad
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { reason: { type: string } }
+    get:
+      operationId: listMessages
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties: { text: { type: string } }",
+    )
+  let result = ir_builder.build(doc)
+  let names =
+    result.types
+    |> list.filter_map(fn(t) {
+      case t {
+        ir.RecordType(name: name, ..) -> Ok(name)
+        _ -> Error(Nil)
+      }
+    })
+    |> list.sort(string.compare)
+  names
+  |> should.equal([
+    "ListMessagesResponseItem", "SendMessageRequest", "SendMessageResponse",
+    "SendMessageResponse422",
+  ])
+
+  let assert Ok(send) =
+    list.find(result.endpoints, fn(e) { e.operation_id == "sendMessage" })
+  let assert option.Some(body) = send.request_body
+  body.type_ref |> should.equal(ir.Named("SendMessageRequest"))
+  let assert Ok(list) =
+    list.find(result.endpoints, fn(e) { e.operation_id == "listMessages" })
+  let assert [resp] = list.responses
+  resp.type_ref
+  |> should.equal(option.Some(ir.Array(ir.Named("ListMessagesResponseItem"))))
+}
+
+/// #14: explicit mapping entries (full `$ref` or bare name, several tags for
+/// one member) and the implicit schema-name tag for a member with no entry.
+pub fn discriminator_mapping_is_resolved_test() {
+  let assert Ok(doc) =
+    yaml.parse_yaml(
+      "openapi: '3.1.0'
+info: { title: t, version: '1' }
+paths: {}
+components:
+  schemas:
+    Message:
+      oneOf:
+        - $ref: '#/components/schemas/TextMessage'
+        - $ref: '#/components/schemas/EventMessage'
+        - $ref: '#/components/schemas/system_message'
+      discriminator:
+        propertyName: kind
+        mapping:
+          text: '#/components/schemas/TextMessage'
+          event: EventMessage
+          meeting: '#/components/schemas/EventMessage'
+    TextMessage:
+      type: object
+      properties: { kind: { type: string } }
+    EventMessage:
+      type: object
+      properties: { kind: { type: string } }
+    system_message:
+      type: object
+      properties: { kind: { type: string } }",
+    )
+  let result = ir_builder.build(doc)
+  let assert Ok(ir.UnionType(discriminator: option.Some(d), ..)) =
+    list.find(result.types, fn(t) {
+      case t {
+        ir.UnionType(name: "Message", ..) -> True
+        _ -> False
+      }
+    })
+  d.property |> should.equal("kind")
+  d.mapping
+  |> should.equal([
+    #("text", ir.Named("TextMessage")),
+    #("event", ir.Named("EventMessage")),
+    #("meeting", ir.Named("EventMessage")),
+    #("system_message", ir.Named("SystemMessage")),
+  ])
+}

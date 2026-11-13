@@ -9,6 +9,8 @@
 //// to be stable and human-readable — semantic versioning rules of nori
 //// itself apply to this module.
 
+import gleam/dict.{type Dict}
+import gleam/json.{type Json}
 import gleam/option.{type Option, None, Some}
 
 /// The complete codegen IR — everything a generator needs to produce code.
@@ -65,11 +67,21 @@ pub type TypeDef {
   UnionType(
     name: String,
     members: List(TypeRef),
-    discriminator: Option(String),
+    discriminator: Option(Discriminator),
     description: Option(String),
   )
   /// Type alias, e.g., type UserId = String
   AliasType(name: String, target: TypeRef, description: Option(String))
+}
+
+/// How a tagged union picks its member: the property that carries the tag,
+/// and every tag value paired with the member it selects.
+///
+/// `mapping` is already resolved. A member the spec's `mapping` does not name
+/// gets its schema name as its tag, which is what OpenAPI prescribes, so a
+/// generator never has to know about the implicit case.
+pub type Discriminator {
+  Discriminator(property: String, mapping: List(#(String, TypeRef)))
 }
 
 /// A field in a record type.
@@ -81,6 +93,44 @@ pub type Field {
     description: Option(String),
     read_only: Bool,
     write_only: Bool,
+    constraints: Constraints,
+  )
+}
+
+/// Validation keywords from the schema a field or parameter was built from.
+///
+/// They apply to the value itself: for a nullable or optional value, to the
+/// value when present; for an array, `min_items`/`max_items` count the list and
+/// `items` holds the constraints of each element. Bounds are kept as written,
+/// so a generator decides how to compare an integer with a fractional bound.
+pub type Constraints {
+  Constraints(
+    minimum: Option(Float),
+    maximum: Option(Float),
+    exclusive_minimum: Option(Float),
+    exclusive_maximum: Option(Float),
+    min_length: Option(Int),
+    max_length: Option(Int),
+    pattern: Option(String),
+    min_items: Option(Int),
+    max_items: Option(Int),
+    items: Option(Constraints),
+  )
+}
+
+/// Constraints with nothing set.
+pub fn no_constraints() -> Constraints {
+  Constraints(
+    minimum: None,
+    maximum: None,
+    exclusive_minimum: None,
+    exclusive_maximum: None,
+    min_length: None,
+    max_length: None,
+    pattern: None,
+    min_items: None,
+    max_items: None,
+    items: None,
   )
 }
 
@@ -136,6 +186,9 @@ pub type Endpoint {
     deprecated: Bool,
     /// Per-endpoint security. None = use global, Some([]) = public, Some([...]) = specific
     security: Option(List(SecurityRequirementIR)),
+    /// The operation's `x-*` extensions, as written in the spec. Generators
+    /// read the ones they know (the MCP generator reads `x-mcp`).
+    extensions: Dict(String, Json),
   )
 }
 
@@ -158,6 +211,7 @@ pub type EndpointParam {
     type_ref: TypeRef,
     required: Bool,
     description: Option(String),
+    constraints: Constraints,
   )
 }
 

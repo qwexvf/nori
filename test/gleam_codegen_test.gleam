@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -34,6 +35,7 @@ fn sample_ir() -> ir.CodegenIR {
             description: None,
             read_only: False,
             write_only: False,
+            constraints: ir.no_constraints(),
           ),
           Field(
             name: "name",
@@ -42,6 +44,7 @@ fn sample_ir() -> ir.CodegenIR {
             description: None,
             read_only: False,
             write_only: False,
+            constraints: ir.no_constraints(),
           ),
           Field(
             name: "email",
@@ -50,6 +53,7 @@ fn sample_ir() -> ir.CodegenIR {
             description: Some("User email address"),
             read_only: False,
             write_only: False,
+            constraints: ir.no_constraints(),
           ),
         ],
         description: Some("A user in the system"),
@@ -75,6 +79,7 @@ fn sample_ir() -> ir.CodegenIR {
         ],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
       Endpoint(
         operation_id: "get_user_by_id",
@@ -90,6 +95,7 @@ fn sample_ir() -> ir.CodegenIR {
             type_ref: Primitive(PString),
             required: True,
             description: Some("User ID"),
+            constraints: ir.no_constraints(),
           ),
         ],
         request_body: None,
@@ -103,6 +109,7 @@ fn sample_ir() -> ir.CodegenIR {
         ],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
       Endpoint(
         operation_id: "create_user",
@@ -127,6 +134,7 @@ fn sample_ir() -> ir.CodegenIR {
         ],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
     ],
     security_schemes: [],
@@ -260,6 +268,7 @@ fn freeform_body_ir() -> ir.CodegenIR {
         responses: [],
         deprecated: False,
         security: None,
+        extensions: dict.new(),
       ),
     ],
     security_schemes: [],
@@ -481,6 +490,7 @@ pub fn generate_enum_alongside_error_schema_test() {
           description: None,
           read_only: False,
           write_only: False,
+          constraints: ir.no_constraints(),
         ),
       ],
       description: None,
@@ -694,6 +704,7 @@ pub fn types_module_imports_option_only_when_used_test() {
             description: None,
             read_only: False,
             write_only: False,
+            constraints: ir.no_constraints(),
           ),
         ],
         description: None,
@@ -718,6 +729,7 @@ pub fn types_module_imports_option_only_when_used_test() {
             description: None,
             read_only: False,
             write_only: False,
+            constraints: ir.no_constraints(),
           ),
         ],
         description: None,

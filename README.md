@@ -7,7 +7,7 @@ OpenAPI 3.0 / 3.1 code generation for Gleam. nori parses a YAML or JSON spec int
 
 Built-in generators:
 
-- **Gleam:** types with JSON decoders/encoders, a route matcher, HTTP request builders, and Wisp middleware (auth, CORS, content-type).
+- **Gleam:** types with JSON decoders/encoders, a route matcher, HTTP request builders, Wisp middleware (auth, CORS, content-type), and MCP tool definitions for operations marked `x-mcp`.
 - **TypeScript:** types, a fetch client, React Query hooks and SWR hooks. You can change the output with [handles](https://hexdocs.pm/handles/) templates. _Deprecated: I'm phasing out the TypeScript targets so nori can focus on Gleam. They still run, but a future release will remove them._
 
 YAML parsing uses [taffy](https://github.com/qwexvf/taffy).
@@ -44,7 +44,7 @@ gleam run -m nori/cli -- validate spec.yaml --format=json  # machine-readable di
 
 Every command exits non-zero on error, so they work in CI. `generate` runs the `gleam format` found on PATH over the Gleam files it writes, so the output passes `gleam format --check` with the same compiler your CI uses; without `gleam` on PATH it prints a note and leaves them unformatted. `--spec=-` (and `validate -`) read the spec from stdin.
 
-`generate` aborts by default when the spec uses features nori can't generate correctly (`discriminator` polymorphism, callbacks, `multipart/form-data`, `deepObject` params, etc.). Pass `--allow-unsupported` to generate anyway, with degraded output.
+`generate` aborts by default when the spec uses features nori can't generate correctly (`discriminator` without `$ref` members, callbacks, `multipart/form-data`, `deepObject` params, etc.). Pass `--allow-unsupported` to generate anyway, with degraded output.
 
 ## Config
 
@@ -76,8 +76,8 @@ output:
 
 ### Splitting the Gleam output across projects
 
-The four generated Gleam modules do not all belong to the same place: `types` is
-shared, `routes` and `middleware` are the backend's, `client` is the frontend's.
+The generated Gleam modules do not all belong to the same place: `types` is
+shared, `routes`, `middleware` and `mcp` are the backend's, `client` is the frontend's.
 `dirs` overrides the directory per file, and `types_module` is the module path
 the others import `types` by when it lands in another project.
 
@@ -108,6 +108,22 @@ output:
 
 See `nori.config.example.yaml` for every option.
 
+### MCP tools
+
+Mark an operation with `x-mcp` to expose it as an MCP tool as well:
+
+```yaml
+/threads/{threadId}/messages:
+  post:
+    operationId: sendMessage
+    x-mcp:
+      tool: send_message       # defaults to the snake_case operationId
+      scopes: [messages:write] # what the caller's token needs
+      confirm: true            # has side effects: run it in two steps
+```
+
+`mcp.gleam` then has `tools()` (name, title, description, `inputSchema`, `outputSchema`, scopes, `confirm`), `tool_to_json` for a `tools/list` entry, and `decode_call(name, arguments)`, which returns a `ToolCall` such as `SendMessage(thread_id: "t1", body: types.SendMessageRequest(..))`. Arguments are path and query parameters by their spec names plus the request body under `body`; query parameters decode into the same `routes.*Query` record the HTTP reader returns, with the same constraint checks. Serving `/mcp`, checking scopes and honouring `confirm` stay in your application. Only a response that is a record gets an `outputSchema`, since MCP's structured content is an object; header and cookie parameters are not part of a tool.
+
 ## What it generates
 
 **Gleam** (server-side):
@@ -117,6 +133,8 @@ See `nori.config.example.yaml` for every option.
   query-parameter reader for each endpoint that has query parameters
 - `client.gleam`: typed request builders
 - `middleware.gleam`: auth extractors, CORS, content-type validation
+- `mcp.gleam`, only when an operation has `x-mcp`: the MCP tool list and a
+  decoder for `tools/call` arguments (below)
 
 Query parameters are typed in both directions. For
 `GET /issues?status=&limit=`:
@@ -221,14 +239,15 @@ Planned add-on packages: `nori_oauth` (OAuth2 / OIDC), `nori_multipart` (multipa
 
 The capability check catches these, and generation stops unless you pass `--allow-unsupported`:
 
-- `discriminator` polymorphism ([#14](https://github.com/qwexvf/nori/issues/14))
+- `discriminator` on a base schema reached through `allOf` (inheritance), or over inline `oneOf`/`anyOf` members. A discriminator over `$ref` members is supported: the Gleam target emits one variant per member and a decoder that dispatches on the tag.
 - Callbacks / webhooks codegen
 - `multipart/form-data` and `application/x-www-form-urlencoded` request bodies ([#13](https://github.com/qwexvf/nori/issues/13))
 - Parameter styles `deepObject`, `pipeDelimited`, `spaceDelimited`
 
+Validation keywords on a property or a query parameter are checked by the generated Gleam record decoders and query readers: `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `minLength`, `maxLength` (in code points), `minItems`, `maxItems`, and the same on an array's inline `items`. Not checked: `pattern`, `multipleOf`, `uniqueItems`, constraints on a `$ref`'d schema, and path parameters.
+
 Tracked roadmap:
 
-- Schema validation constraints in decoder ([#3](https://github.com/qwexvf/nori/issues/3))
 - Zod / Valibot validation generation ([#7](https://github.com/qwexvf/nori/issues/7))
 
 ## Examples

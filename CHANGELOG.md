@@ -2,8 +2,44 @@
 
 ## Unreleased
 
+### Breaking
+
+- `ir.Endpoint` has a new `extensions` field holding the operation's `x-*`
+  extensions. Code that builds endpoints adds `extensions: dict.new()`.
+- `ir.Field` and `ir.EndpointParam` have a new `constraints: ir.Constraints`
+  field. Code that builds them adds `constraints: ir.no_constraints()`.
+- An operation's inline object request or response body is now a named record
+  instead of `Dynamic` (#58): the request body of `sendMessage` is
+  `SendMessageRequest`, its 2xx response `SendMessageResponse`, another status
+  `SendMessageResponse422`, an array's item `...ResponseItem`. Handler and
+  client signatures that took or returned `Dynamic` for such a body change to
+  the record. Bodies reached through `components/requestBodies` or
+  `components/responses` are unchanged.
+- `ir.UnionType.discriminator` is now `Option(ir.Discriminator)`, carrying the
+  tag property and the resolved tag-to-member mapping, instead of the property
+  name alone. Code that only matched `UnionType(..)` is unaffected.
+
 ### Added
 
+- MCP tools (#52). Operations marked with `x-mcp: { tool, scopes, confirm }`
+  are generated into `mcp.gleam`: the tool list with `inputSchema` and
+  `outputSchema` built from the IR, a `ToolCall` type, and `decode_call` for
+  `tools/call` arguments, which reuses the types' decoders, the routes' query
+  records and the constraint checks.
+- Validation constraints (#3). The IR carries `minimum`, `maximum`,
+  `exclusiveMinimum`, `exclusiveMaximum`, `minLength`, `maxLength`, `pattern`,
+  `minItems`, `maxItems` and an array's element constraints. The Gleam record
+  decoders and query readers reject values outside them (string length in code
+  points). `pattern`, `multipleOf` and `uniqueItems` are not enforced.
+- `discriminator` over `oneOf`/`anyOf` members that are all `$ref`s is no
+  longer blocked by the capability check (#14). The Gleam target emits a
+  decoder that reads the tag and decodes the member it maps to, honouring
+  explicit `mapping` entries (full `$ref` or bare name, several tags per
+  member) and the implicit schema-name tag.
+- Gleam unions whose members are all named types now get a decoder and an
+  encoder. Without a discriminator the decoder keeps the first member that
+  decodes. Previously none was emitted, so a record field typed with a union
+  called a decoder that did not exist.
 - `generate` runs `gleam format` over the Gleam files it writes, using the
   `gleam` on PATH, so the output passes `gleam format --check` (#36). It never
   fails the run: without `gleam` on PATH it prints a note, and a formatter

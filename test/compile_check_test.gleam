@@ -18,6 +18,7 @@ import gleam/list
 import gleam/string
 import gleeunit/should
 import nori/codegen/gleam_client
+import nori/codegen/gleam_mcp
 import nori/codegen/gleam_middleware
 import nori/codegen/gleam_routes
 import nori/codegen/gleam_types
@@ -350,6 +351,15 @@ fn write_generated(codegen_ir: CodegenIR) -> Nil {
       ),
       #("client.gleam", gleam_client.generate(codegen_ir, module_prefix)),
     ],
+    case gleam_mcp.has_tools(codegen_ir) {
+      True -> [
+        #(
+          "mcp.gleam",
+          gleam_mcp.generate(codegen_ir, module_prefix, module_prefix),
+        ),
+      ]
+      False -> []
+    },
   ])
   |> list.each(fn(pair) {
     let #(name, contents) = pair
@@ -1072,4 +1082,410 @@ paths:
   output
   |> string.contains("fn(String) -> Result(Nil, String)")
   |> should.be_true
+}
+
+/// #3: constraints reject out-of-range values in a body decoder and in a query
+/// reader, and accept the boundaries themselves.
+pub fn constraints_behave_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Constraints
+  version: '1.0.0'
+paths:
+  /jobs:
+    get:
+      operationId: searchJobs
+      parameters:
+        - { name: days, in: query, schema: { type: array, maxItems: 2, items: { type: integer, minimum: 1, maximum: 5 } } }
+        - { name: rate_min, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: q, in: query, schema: { type: string, maxLength: 3 } }
+        - { name: score, in: query, schema: { type: number, exclusiveMaximum: 1.5 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+components:
+  schemas:
+    Message:
+      type: object
+      required: [text, slots]
+      properties:
+        text: { type: string, minLength: 1, maxLength: 4 }
+        confidence: { type: [integer, 'null'], minimum: 0, maximum: 100 }
+        slots: { type: array, minItems: 1, items: { type: integer, minimum: 1 } }"
+
+  let main_source =
+    "import generated/routes
+import generated/types
+import gleam/io
+import gleam/json
+import gleam/string
+
+fn body(label: String, input: String) -> Nil {
+  io.println(label <> \"=\" <> string.inspect(json.parse(input, types.message_decoder())))
+}
+
+fn query(label: String, params: List(#(String, String))) -> Nil {
+  io.println(label <> \"=\" <> string.inspect(routes.search_jobs_query(params)))
+}
+
+pub fn main() {
+  body(\"ok\", \"{\\\"text\\\":\\\"日本語だ\\\",\\\"confidence\\\":100,\\\"slots\\\":[1]}\")
+  body(\"empty_text\", \"{\\\"text\\\":\\\"\\\",\\\"slots\\\":[1]}\")
+  body(\"long_text\", \"{\\\"text\\\":\\\"abcde\\\",\\\"slots\\\":[1]}\")
+  body(\"null_conf\", \"{\\\"text\\\":\\\"a\\\",\\\"confidence\\\":null,\\\"slots\\\":[1]}\")
+  body(\"high_conf\", \"{\\\"text\\\":\\\"a\\\",\\\"confidence\\\":101,\\\"slots\\\":[1]}\")
+  body(\"no_slots\", \"{\\\"text\\\":\\\"a\\\",\\\"slots\\\":[]}\")
+  body(\"bad_slot\", \"{\\\"text\\\":\\\"a\\\",\\\"slots\\\":[0]}\")
+  query(\"q_ok\", [#(\"days\", \"1\"), #(\"days\", \"5\"), #(\"rate_min\", \"0\"), #(\"q\", \"abc\"), #(\"score\", \"1.4\")])
+  query(\"day_high\", [#(\"days\", \"6\")])
+  query(\"too_many_days\", [#(\"days\", \"1\"), #(\"days\", \"2\"), #(\"days\", \"3\")])
+  query(\"rate_neg\", [#(\"rate_min\", \"-1\")])
+  query(\"q_long\", [#(\"q\", \"abcd\")])
+  query(\"score_edge\", [#(\"score\", \"1.5\")])
+}
+"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+
+  // Four code points, more than four bytes: length is not counted in bytes.
+  assert_line("ok=Ok(Message(")
+  assert_line(
+    "empty_text=Error(UnableToDecode([DecodeError(\"string length >= 1 and length <= 4\"",
+  )
+  assert_line(
+    "long_text=Error(UnableToDecode([DecodeError(\"string length >= 1 and length <= 4\"",
+  )
+  assert_line("null_conf=Ok(Message(")
+  assert_line(
+    "high_conf=Error(UnableToDecode([DecodeError(\"integer >= 0 and <= 100\"",
+  )
+  assert_line("no_slots=Error(UnableToDecode([DecodeError(\"array items >= 1\"")
+  assert_line("bad_slot=Error(UnableToDecode([DecodeError(\"integer >= 1\"")
+  assert_line(
+    "q_ok=Ok(SearchJobsQuery([1, 5], Some(0), Some(\"abc\"), Some(1.4)))",
+  )
+  assert_line(
+    "day_high=Error(InvalidQueryParam(\"days\", \"integer >= 1 and <= 5\"))",
+  )
+  assert_line(
+    "too_many_days=Error(InvalidQueryParam(\"days\", \"array items <= 2\"))",
+  )
+  assert_line(
+    "rate_neg=Error(InvalidQueryParam(\"rate_min\", \"integer >= 0\"))",
+  )
+  assert_line("q_long=Error(InvalidQueryParam(\"q\", \"string length <= 3\"))")
+  assert_line(
+    "score_edge=Error(InvalidQueryParam(\"score\", \"number < 1.5\"))",
+  )
+}
+
+/// #58: handlers and client functions for inline bodies compile against the
+/// named records.
+pub fn inline_operation_bodies_output_compiles_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Inline bodies
+  version: '1.0.0'
+paths:
+  /threads/{threadId}/messages:
+    post:
+      operationId: sendMessage
+      parameters:
+        - { name: threadId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string }
+                author: { type: object, properties: { name: { type: string } } }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { id: { type: string } }
+    get:
+      operationId: listMessages
+      parameters:
+        - { name: threadId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties: { text: { type: string } }"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let ir = ir_builder.build(doc)
+  let routes = gleam_routes.generate(ir, "generated")
+  routes |> string.contains("Dynamic") |> should.be_false
+  routes |> string.contains("SendMessageRequest") |> should.be_true
+  ir |> should_compile
+}
+
+/// #52: operations with `x-mcp` become tools whose schemas and argument
+/// decoding match the HTTP side; an operation without it is not a tool.
+pub fn mcp_tools_behave_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Tools
+  version: '1.0.0'
+paths:
+  /threads/{threadId}/messages:
+    post:
+      operationId: sendMessage
+      summary: Send a message
+      x-mcp: { tool: send_message, scopes: [messages:write], confirm: true }
+      parameters:
+        - { name: threadId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, maxLength: 5 }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+  /jobs:
+    get:
+      operationId: searchJobs
+      x-mcp: { scopes: [jobs:read] }
+      parameters:
+        - { name: days, in: query, schema: { type: array, items: { type: integer, minimum: 1, maximum: 5 } } }
+        - { name: role, in: query, schema: { $ref: '#/components/schemas/Role' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Message' } }
+  /health:
+    get:
+      operationId: health
+      responses:
+        '204': { description: OK }
+components:
+  schemas:
+    Role:
+      type: string
+      enum: [backend, frontend]
+    Message:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }"
+
+  let main_source =
+    "import generated/mcp
+import gleam/dynamic/decode
+import gleam/io
+import gleam/json
+import gleam/list
+import gleam/string
+
+fn call(label: String, name: String, arguments: String) -> Nil {
+  let assert Ok(args) = json.parse(arguments, decode.dynamic)
+  io.println(label <> \"=\" <> string.inspect(mcp.decode_call(name, args)))
+}
+
+pub fn main() {
+  io.println(\"names=\" <> string.inspect(list.map(mcp.tools(), fn(t) { t.name })))
+  let assert Ok(send) = mcp.tool(\"send_message\")
+  io.println(\"send=\" <> json.to_string(mcp.tool_to_json(send)))
+  io.println(\"send_meta=\" <> string.inspect(#(send.scopes, send.confirm, send.operation_id)))
+  let assert Ok(search) = mcp.tool(\"search_jobs\")
+  io.println(\"search=\" <> json.to_string(mcp.tool_to_json(search)))
+  call(\"ok\", \"send_message\", \"{\\\"threadId\\\":\\\"t1\\\",\\\"body\\\":{\\\"text\\\":\\\"hi\\\"}}\")
+  call(\"long\", \"send_message\", \"{\\\"threadId\\\":\\\"t1\\\",\\\"body\\\":{\\\"text\\\":\\\"toolong\\\"}}\")
+  call(\"no_body\", \"send_message\", \"{\\\"threadId\\\":\\\"t1\\\"}\")
+  call(\"query\", \"search_jobs\", \"{\\\"days\\\":[1,5],\\\"role\\\":\\\"backend\\\"}\")
+  call(\"empty_query\", \"search_jobs\", \"{}\")
+  call(\"bad_day\", \"search_jobs\", \"{\\\"days\\\":[6]}\")
+  call(\"unknown\", \"health\", \"{}\")
+}
+"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+
+  assert_line("names=[\"search_jobs\", \"send_message\"]")
+  assert_line(
+    "send={\"name\":\"send_message\",\"description\":\"Send a message\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"threadId\":{\"type\":\"string\"},\"body\":{\"$ref\":\"#/$defs/SendMessageRequest\"}},\"required\":[\"threadId\",\"body\"],\"$defs\":{\"SendMessageRequest\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":5}},\"required\":[\"text\"]}}},\"title\":\"Send a message\",\"outputSchema\":{\"$ref\":\"#/$defs/Message\",\"$defs\":{\"Message\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"]}}}}",
+  )
+  assert_line("send_meta=#([\"messages:write\"], True, \"sendMessage\")")
+  // An array response is not an object, so it gets no outputSchema.
+  assert_line(
+    "search={\"name\":\"search_jobs\",\"description\":\"searchJobs\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"days\":{\"type\":\"array\",\"items\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":5}},\"role\":{\"$ref\":\"#/$defs/Role\"}},\"$defs\":{\"Role\":{\"type\":\"string\",\"enum\":[\"backend\",\"frontend\"]}}}}",
+  )
+  assert_line("ok=Ok(SendMessage(\"t1\", SendMessageRequest(\"hi\")))")
+  assert_line(
+    "long=Error(InvalidArguments([DecodeError(\"string length >= 1 and length <= 5\", \"String\", [\"body\", \"text\"])]))",
+  )
+  assert_line(
+    "no_body=Error(InvalidArguments([DecodeError(\"Field\", \"Nothing\", [\"body\"])]))",
+  )
+  assert_line(
+    "query=Ok(SearchJobs(SearchJobsQuery([1, 5], Some(RoleBackend))))",
+  )
+  assert_line("empty_query=Ok(SearchJobs(SearchJobsQuery([], None)))")
+  assert_line(
+    "bad_day=Error(InvalidArguments([DecodeError(\"integer >= 1 and <= 5\", \"Int\", [\"days\", \"0\"])]))",
+  )
+  assert_line("unknown=Error(UnknownTool(\"health\"))")
+}
+
+/// #14: a tagged union decodes each tag to its member, rejects an unknown tag
+/// on the tag itself, and encodes back to the same object. An untagged union
+/// keeps the first member that decodes.
+pub fn discriminated_union_behaves_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Unions
+  version: '1.0.0'
+paths:
+  /messages:
+    get:
+      operationId: listMessages
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Message'
+components:
+  schemas:
+    Message:
+      oneOf:
+        - $ref: '#/components/schemas/TextMessage'
+        - $ref: '#/components/schemas/EventMessage'
+      discriminator:
+        propertyName: kind
+        mapping:
+          text: '#/components/schemas/TextMessage'
+          event: EventMessage
+          meeting: EventMessage
+    TextMessage:
+      type: object
+      required: [kind, body]
+      properties:
+        kind: { type: string }
+        body: { type: string }
+    EventMessage:
+      type: object
+      required: [kind, at]
+      properties:
+        kind: { type: string }
+        at: { type: string }
+    Contact:
+      oneOf:
+        - $ref: '#/components/schemas/Email'
+        - $ref: '#/components/schemas/Phone'
+    Email:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string }
+    Phone:
+      type: object
+      required: [phone]
+      properties:
+        phone: { type: string }"
+
+  let main_source =
+    "import generated/types
+import gleam/io
+import gleam/json
+import gleam/string
+
+fn show(label: String, input: String) -> Nil {
+  let result = json.parse(input, types.message_decoder())
+  io.println(label <> \"=\" <> string.inspect(result))
+  case result {
+    Ok(m) -> io.println(label <> \"_out=\" <> json.to_string(types.encode_message(m)))
+    Error(_) -> Nil
+  }
+}
+
+pub fn main() {
+  show(\"text\", \"{\\\"kind\\\":\\\"text\\\",\\\"body\\\":\\\"hi\\\"}\")
+  show(\"event\", \"{\\\"kind\\\":\\\"event\\\",\\\"at\\\":\\\"10:00\\\"}\")
+  show(\"meeting\", \"{\\\"kind\\\":\\\"meeting\\\",\\\"at\\\":\\\"11:00\\\"}\")
+  show(\"unknown\", \"{\\\"kind\\\":\\\"poll\\\",\\\"body\\\":\\\"hi\\\"}\")
+  show(\"wrong_shape\", \"{\\\"kind\\\":\\\"event\\\",\\\"body\\\":\\\"hi\\\"}\")
+  io.println(\"phone=\" <> string.inspect(json.parse(\"{\\\"phone\\\":\\\"123\\\"}\", types.contact_decoder())))
+  io.println(\"neither=\" <> string.inspect(json.parse(\"{}\", types.contact_decoder())))
+}
+"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+
+  // Field order inside a record follows the properties dict, which differs
+  // between targets, so these check pieces rather than whole lines.
+  assert_line("text=Ok(TextMessageVariant(TextMessage(")
+  assert_line("\"kind\":\"text\"")
+  assert_line("\"body\":\"hi\"")
+  assert_line("event=Ok(EventMessageVariant(EventMessage(")
+  assert_line("meeting=Ok(EventMessageVariant(EventMessage(")
+  assert_line("\"kind\":\"meeting\"")
+  // The tag is reported first. The catch-all arm still runs on the data, so
+  // the last member's missing fields follow it.
+  assert_line(
+    "unknown=Error(UnableToDecode([DecodeError(\"Message.kind\", \"String\", [\"kind\"])",
+  )
+  assert_line(
+    "wrong_shape=Error(UnableToDecode([DecodeError(\"Field\", \"Nothing\", [\"at\"])]))",
+  )
+  assert_line("phone=Ok(PhoneVariant(Phone(\"123\")))")
+  assert_line("neither=Error(UnableToDecode(")
 }

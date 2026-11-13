@@ -155,3 +155,56 @@ pub fn issue_to_string_includes_location_test() {
   capability.issue_to_string(issue)
   |> should.equal("  ✗ test at #/foo\n    because")
 }
+
+/// #14: a discriminator over `$ref` members is generated, so it is not flagged.
+pub fn check_allows_discriminator_over_ref_members_test() {
+  let message_schema =
+    schema.Schema(
+      ..schema.empty(),
+      one_of: [
+        reference.Reference("#/components/schemas/Text"),
+        reference.Reference("#/components/schemas/Slots"),
+      ],
+      discriminator: Some(schema.Discriminator(
+        property_name: "kind",
+        mapping: None,
+        extensions: dict.new(),
+      )),
+    )
+  let comps =
+    components.Components(
+      ..components.new(),
+      schemas: dict.from_list([#("Message", message_schema)]),
+    )
+  let doc = document.with_components(empty_doc(), comps)
+
+  capability.check(doc) |> should.be_ok
+}
+
+/// #14: an inline member has no name to tag it with.
+pub fn check_flags_discriminator_over_inline_members_test() {
+  let message_schema =
+    schema.Schema(
+      ..schema.empty(),
+      one_of: [
+        reference.Reference("#/components/schemas/Text"),
+        reference.Inline(schema.empty()),
+      ],
+      discriminator: Some(schema.Discriminator(
+        property_name: "kind",
+        mapping: None,
+        extensions: dict.new(),
+      )),
+    )
+  let comps =
+    components.Components(
+      ..components.new(),
+      schemas: dict.from_list([#("Message", message_schema)]),
+    )
+  let doc = document.with_components(empty_doc(), comps)
+
+  capability.check(doc)
+  |> should.be_error
+  |> list.any(fn(i) { i.name == "discriminator" })
+  |> should.be_true
+}

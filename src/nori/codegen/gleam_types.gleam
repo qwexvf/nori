@@ -7,6 +7,7 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import nori/codegen/gleam_constraints
 import nori/codegen/ir.{
   type CodegenIR, type EnumVariant, type Field, type PrimitiveType, type TypeDef,
   type TypeRef, AliasType, Array, Dict, EnumType, Literal, Named, Nullable,
@@ -17,7 +18,6 @@ import nori/codegen/naming
 
 /// Generates a complete Gleam module string from the CodegenIR.
 pub fn generate(ir: CodegenIR) -> String {
-  let header = generate_header(ir)
   let type_defs =
     ir.types
     |> list.map(generate_type_def)
@@ -32,6 +32,14 @@ pub fn generate(ir: CodegenIR) -> String {
     |> list.map(generate_encoder)
     |> list.filter(fn(s) { s != "" })
     |> string.join("\n\n")
+  // Constraint checks call list.length and string.to_utf_codepoints; whether
+  // any were emitted is only known once the decoders exist.
+  let header =
+    generate_header(
+      ir,
+      string.contains(decoders, "list.length("),
+      string.contains(decoders, "string.to_utf_codepoints("),
+    )
 
   string.join([header, "", type_defs, "", decoders, "", encoders, ""], "\n")
 }
@@ -45,7 +53,11 @@ pub fn to_snake_case(name: String) -> String {
 // Header generation
 // ---------------------------------------------------------------------------
 
-fn generate_header(ir: CodegenIR) -> String {
+fn generate_header(
+  ir: CodegenIR,
+  checks_use_list: Bool,
+  checks_use_string: Bool,
+) -> String {
   let title_comment = "//// Generated from " <> ir.title <> " v" <> ir.version
 
   // For specs with no named schemas, skip the codec imports entirely so the
@@ -74,7 +86,15 @@ fn generate_header(ir: CodegenIR) -> String {
       // A map field is typed Dict, and its encoder walks the entries with
       // dict.to_list and list.map.
       let dict_imports = case uses_dict(ir) {
-        True -> ["import gleam/dict.{type Dict}", "import gleam/list"]
+        True -> ["import gleam/dict.{type Dict}"]
+        False -> []
+      }
+      let list_import = case uses_dict(ir) || checks_use_list {
+        True -> ["import gleam/list"]
+        False -> []
+      }
+      let string_import = case checks_use_string {
+        True -> ["import gleam/string"]
         False -> []
       }
       let lines =
@@ -88,6 +108,8 @@ fn generate_header(ir: CodegenIR) -> String {
             "import gleam/json.{type Json}",
           ],
           option_import,
+          list_import,
+          string_import,
         ])
       string.join(lines, "\n")
     }
@@ -366,9 +388,133 @@ fn generate_decoder(typedef: TypeDef) -> String {
   case typedef {
     RecordType(name, fields, _) -> generate_record_decoder(name, fields)
     EnumType(name, variants, _) -> generate_enum_decoder(name, variants)
-    UnionType(..) -> ""
+    UnionType(name, members, discriminator, _) ->
+      generate_union_decoder(name, members, discriminator)
     AliasType(..) -> ""
   }
+}
+
+/// The names of a union's members, or `Error` when any member is not a named
+/// type. A member like a list or a primitive has no constructor name that
+/// compiles (`List(String)Variant`), so those unions get a type and nothing
+/// that would have to name the members.
+fn named_members(members: List(TypeRef)) -> Result(List(String), Nil) {
+  list.try_map(members, fn(m) {
+    case m {
+      Named(name) -> Ok(name)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn generate_union_decoder(
+  name: String,
+  members: List(TypeRef),
+  discriminator: Option(ir.Discriminator),
+) -> String {
+  case named_members(members), discriminator {
+    Ok([first, ..rest]), None -> untagged_union_decoder(name, first, rest)
+    Ok(names), Some(d) -> tagged_union_decoder(name, names, d)
+    _, _ -> ""
+  }
+}
+
+/// Tries each member in order and keeps the first that decodes, which is what
+/// `oneOf` without a discriminator can promise: OpenAPI wants exactly one to
+/// match, but checking that would decode every member every time.
+fn untagged_union_decoder(
+  name: String,
+  first: String,
+  rest: List(String),
+) -> String {
+  let variant = fn(member) {
+    to_snake_case(member) <> "_decoder() |> decode.map(" <> member <> "Variant)"
+  }
+  let others =
+    rest
+    |> list.map(fn(m) { "    " <> variant(m) <> ",\n" })
+    |> string.concat
+
+  "pub fn "
+  <> to_snake_case(name)
+  <> "_decoder() -> Decoder("
+  <> name
+  <> ") {\n  decode.one_of(\n    "
+  <> variant(first)
+  <> ",\n    [\n"
+  <> string.replace(others, "    ", "      ")
+  <> "    ],\n  )\n}"
+}
+
+/// Reads the tag, then decodes the whole object as the member it names.
+///
+/// An unknown tag is rejected while reading the tag, so the first error names
+/// the property that is wrong. Failing anywhere else would need a zero value of
+/// the union, which a record member does not have; the dispatch therefore ends
+/// on a catch-all, and an unknown tag also reports that member's missing fields
+/// after the tag error.
+fn tagged_union_decoder(
+  name: String,
+  names: List(String),
+  d: ir.Discriminator,
+) -> String {
+  let arms =
+    list.filter_map(names, fn(member) {
+      let tags =
+        list.filter_map(d.mapping, fn(pair) {
+          case pair.1 == Named(member) {
+            True -> Ok(string_literal(pair.0))
+            False -> Error(Nil)
+          }
+        })
+      case tags {
+        [] -> Error(Nil)
+        _ -> Ok(#(tags, member))
+      }
+    })
+  case list.reverse(arms) {
+    [] -> ""
+    [#(_, last), ..earlier_reversed] -> {
+      let all_tags = list.flat_map(arms, fn(arm) { arm.0 })
+      let dispatch =
+        list.reverse(earlier_reversed)
+        |> list.map(fn(arm) {
+          "    "
+          <> string.join(arm.0, " | ")
+          <> " ->\n      "
+          <> to_snake_case(arm.1)
+          <> "_decoder() |> decode.map("
+          <> arm.1
+          <> "Variant)\n"
+        })
+        |> string.concat
+      "pub fn "
+      <> to_snake_case(name)
+      <> "_decoder() -> Decoder("
+      <> name
+      <> ") {\n  use tag <- decode.field(\n    "
+      <> string_literal(d.property)
+      <> ",\n    decode.string\n      |> decode.then(fn(tag) {\n        case tag {\n          "
+      <> string.join(all_tags, " | ")
+      <> " -> decode.success(tag)\n          _ -> decode.failure(tag, "
+      <> string_literal(name <> "." <> d.property)
+      <> ")\n        }\n      }),\n  )\n  case tag {\n"
+      <> dispatch
+      <> "    _ -> "
+      <> to_snake_case(last)
+      <> "_decoder() |> decode.map("
+      <> last
+      <> "Variant)\n  }\n}"
+    }
+  }
+}
+
+fn string_literal(value: String) -> String {
+  let escaped =
+    value
+    |> string.replace("\\", "\\\\")
+    |> string.replace("\"", "\\\"")
+  "\"" <> escaped <> "\""
 }
 
 fn generate_record_decoder(name: String, fields: List(Field)) -> String {
@@ -377,7 +523,7 @@ fn generate_record_decoder(name: String, fields: List(Field)) -> String {
     fields
     |> list.map(fn(f) {
       let snake = naming.to_field_name(f.name)
-      let decoder_expr = type_ref_decoder(f.type_ref)
+      let decoder_expr = constrained_decoder(f.type_ref, f.constraints, "")
       case f.required {
         True ->
           "  use "
@@ -420,15 +566,67 @@ fn generate_record_decoder(name: String, fields: List(Field)) -> String {
   <> "))\n}"
 }
 
-fn type_ref_decoder(ref: TypeRef) -> String {
+/// The decoder for `ref`, rejecting values its constraints rule out. An
+/// optional or nullable value is checked when present; an array's count is
+/// checked on the list and its element constraints on each element.
+/// `value_decoder` for code outside the types module: named types are called
+/// through `qualifier` (`"types."`), and a constraint check still applies.
+pub fn value_decoder(
+  ref: TypeRef,
+  c: ir.Constraints,
+  qualifier: String,
+) -> String {
+  constrained_decoder(ref, c, qualifier)
+}
+
+fn constrained_decoder(ref: TypeRef, c: ir.Constraints, q: String) -> String {
   case ref {
-    Named(name) -> to_snake_case(name) <> "_decoder()"
+    Nullable(inner) | Optional(inner) ->
+      "decode.optional(" <> constrained_decoder(inner, c, q) <> ")"
+    Array(item) -> {
+      let item_constraints = option.unwrap(c.items, ir.no_constraints())
+      checked_decoder(
+        "decode.list(" <> constrained_decoder(item, item_constraints, q) <> ")",
+        gleam_constraints.count_checks(c, "v"),
+        "array",
+      )
+    }
+    Primitive(p) ->
+      checked_decoder(
+        primitive_decoder(p),
+        gleam_constraints.scalar_checks(c, p, "v"),
+        gleam_constraints.type_name(p),
+      )
+    _ -> type_ref_decoder(ref, q)
+  }
+}
+
+fn checked_decoder(
+  base: String,
+  checks: List(gleam_constraints.Check),
+  type_name: String,
+) -> String {
+  case checks {
+    [] -> base
+    _ ->
+      base
+      <> " |> decode.then(fn(v) { case "
+      <> gleam_constraints.condition(checks)
+      <> " { True -> decode.success(v) False -> decode.failure(v, \""
+      <> gleam_constraints.describe(type_name, checks)
+      <> "\") } })"
+  }
+}
+
+fn type_ref_decoder(ref: TypeRef, q: String) -> String {
+  case ref {
+    Named(name) -> q <> to_snake_case(name) <> "_decoder()"
     Primitive(p) -> primitive_decoder(p)
-    Array(item) -> "decode.list(" <> type_ref_decoder(item) <> ")"
+    Array(item) -> "decode.list(" <> type_ref_decoder(item, q) <> ")"
     Dict(_, value) ->
-      "decode.dict(decode.string, " <> type_ref_decoder(value) <> ")"
-    Nullable(inner) -> "decode.optional(" <> type_ref_decoder(inner) <> ")"
-    Optional(inner) -> "decode.optional(" <> type_ref_decoder(inner) <> ")"
+      "decode.dict(decode.string, " <> type_ref_decoder(value, q) <> ")"
+    Nullable(inner) -> "decode.optional(" <> type_ref_decoder(inner, q) <> ")"
+    Optional(inner) -> "decode.optional(" <> type_ref_decoder(inner, q) <> ")"
     Literal(_) -> "decode.string"
     Unknown -> "decode.dynamic"
   }
@@ -483,7 +681,7 @@ fn generate_encoder(typedef: TypeDef) -> String {
   case typedef {
     RecordType(name, fields, _) -> generate_record_encoder(name, fields)
     EnumType(name, _variants, _) -> generate_enum_encoder(name)
-    UnionType(..) -> ""
+    UnionType(name, members, _, _) -> generate_union_encoder(name, members)
     AliasType(..) -> ""
   }
 }
@@ -552,6 +750,33 @@ fn type_ref_encoder(expr: String, ref: TypeRef) -> String {
       <> " None -> json.null() }"
     Literal(value) -> "json.string(\"" <> value <> "\")"
     Unknown -> "json.null()"
+  }
+}
+
+/// Each member encodes itself. A tagged member's own schema declares the tag
+/// property (OpenAPI requires it), so its encoder already writes the tag.
+fn generate_union_encoder(name: String, members: List(TypeRef)) -> String {
+  case named_members(members) {
+    Ok([_, ..] as names) -> {
+      let arms =
+        names
+        |> list.map(fn(member) {
+          "    "
+          <> member
+          <> "Variant(v) -> encode_"
+          <> to_snake_case(member)
+          <> "(v)\n"
+        })
+        |> string.concat
+      "pub fn encode_"
+      <> to_snake_case(name)
+      <> "(value: "
+      <> name
+      <> ") -> Json {\n  case value {\n"
+      <> arms
+      <> "  }\n}"
+    }
+    _ -> ""
   }
 }
 

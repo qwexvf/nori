@@ -11,6 +11,7 @@ import gleam/result
 import gleam/string
 import nori/codegen/ir
 import nori/codegen/naming
+import nori/components
 import nori/document.{type Document}
 import nori/operation.{type Operation, type PathItem}
 import nori/parameter.{type Parameter}
@@ -47,6 +48,7 @@ pub fn build(doc: Document) -> ir.CodegenIR {
 
 /// Builds a CodegenIR with the given options.
 pub fn build_with(doc: Document, options: BuildOptions) -> ir.CodegenIR {
+  let doc = hoist_operation_schemas(doc, options.inline_enums)
   let types =
     build_types(doc, options.inline_enums)
     |> fn(types) {
@@ -160,28 +162,10 @@ fn build_record_type(name: String, s: Schema) -> ir.TypeDef {
     dict.to_list(s.properties)
     |> list.map(fn(pair) {
       let #(field_name, ref_schema) = pair
-      let is_required = list.contains(s.required, field_name)
-      let #(type_ref, description, read_only, write_only) = case ref_schema {
-        reference.Reference(ref_str) -> #(
-          ref_to_typeref(ref_str),
-          option.None,
-          False,
-          False,
-        )
-        reference.Inline(field_schema) -> {
-          let tr = schema_type_to_typeref(field_schema)
-          let ro = option.unwrap(field_schema.read_only, False)
-          let wo = option.unwrap(field_schema.write_only, False)
-          #(tr, field_schema.description, ro, wo)
-        }
-      }
-      ir.Field(
-        name: field_name,
-        type_ref: type_ref,
-        required: is_required,
-        description: description,
-        read_only: read_only,
-        write_only: write_only,
+      property_field(
+        field_name,
+        ref_schema,
+        list.contains(s.required, field_name),
       )
     })
   ir.RecordType(name: name, fields: fields, description: s.description)
@@ -254,18 +238,21 @@ fn property_field(
   prop_ref: reference.Ref(Schema),
   is_required: Bool,
 ) -> ir.Field {
-  let #(type_ref, description, read_only, write_only) = case prop_ref {
+  let #(type_ref, description, read_only, write_only, constraints) = case
+    prop_ref
+  {
     reference.Reference(ref_str) -> #(
       ref_to_typeref(ref_str),
       option.None,
       False,
       False,
+      ir.no_constraints(),
     )
     reference.Inline(field_schema) -> {
       let tr = schema_type_to_typeref(field_schema)
       let ro = option.unwrap(field_schema.read_only, False)
       let wo = option.unwrap(field_schema.write_only, False)
-      #(tr, field_schema.description, ro, wo)
+      #(tr, field_schema.description, ro, wo, schema_constraints(field_schema))
     }
   }
   ir.Field(
@@ -275,6 +262,28 @@ fn property_field(
     description: description,
     read_only: read_only,
     write_only: write_only,
+    constraints: constraints,
+  )
+}
+
+/// The validation keywords of `s`, and of its inline `items` for an array.
+/// A `$ref`'d schema's constraints belong to that type, not to this use of it.
+fn schema_constraints(s: Schema) -> ir.Constraints {
+  ir.Constraints(
+    minimum: s.minimum,
+    maximum: s.maximum,
+    exclusive_minimum: s.exclusive_minimum,
+    exclusive_maximum: s.exclusive_maximum,
+    min_length: s.min_length,
+    max_length: s.max_length,
+    pattern: s.pattern,
+    min_items: s.min_items,
+    max_items: s.max_items,
+    items: case s.items {
+      option.Some(reference.Inline(item)) ->
+        option.Some(schema_constraints(item))
+      _ -> option.None
+    },
   )
 }
 
@@ -311,7 +320,11 @@ fn build_union_type(
       }
     })
   let disc = case discriminator {
-    option.Some(d) -> option.Some(d.property_name)
+    option.Some(d) ->
+      option.Some(ir.Discriminator(
+        property: d.property_name,
+        mapping: discriminator_mapping(members, d),
+      ))
     option.None -> option.None
   }
   ir.UnionType(
@@ -320,6 +333,53 @@ fn build_union_type(
     discriminator: disc,
     description: description,
   )
+}
+
+/// Every tag value paired with the member it selects, in member order.
+///
+/// An explicit `mapping` entry may name its target as a full `$ref` or as a
+/// bare schema name. A `$ref` member with no entry pointing at it is tagged
+/// with its own schema name. Inline members have no name to be tagged with,
+/// so only an explicit entry could reach them, and an entry has no way to
+/// point at an inline schema: they get no tag.
+fn discriminator_mapping(
+  members: List(reference.Ref(Schema)),
+  d: schema.Discriminator,
+) -> List(#(String, ir.TypeRef)) {
+  let explicit = case d.mapping {
+    option.Some(m) ->
+      dict.to_list(m)
+      |> list.map(fn(pair) { #(pair.0, mapping_target_name(pair.1)) })
+      |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+    option.None -> []
+  }
+  list.flat_map(members, fn(member) {
+    case member {
+      reference.Inline(_) -> []
+      reference.Reference(ref_str) -> {
+        let component = ref_component_name(ref_str)
+        let tags =
+          list.filter_map(explicit, fn(pair) {
+            case pair.1 == component {
+              True -> Ok(pair.0)
+              False -> Error(Nil)
+            }
+          })
+        let tags = case tags {
+          [] -> [component]
+          _ -> tags
+        }
+        list.map(tags, fn(tag) { #(tag, ref_to_typeref(ref_str)) })
+      }
+    }
+  })
+}
+
+fn mapping_target_name(target: String) -> String {
+  case string.contains(target, "/") {
+    True -> ref_component_name(target)
+    False -> target
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -488,6 +548,177 @@ fn hoist_ref(
         }
       }
   }
+}
+
+/// Moves inline object schemas in operation request and response bodies into
+/// the component schemas and points the operation at them, so a body gets a
+/// record type and a decoder instead of `Dynamic` (#58). The request body of
+/// `sendMessage` becomes `SendMessageRequest`, its 2xx response
+/// `SendMessageResponse`, any other status `SendMessageResponse404`. An array
+/// of inline objects names its item (`...ResponseItem`). Bodies that are a
+/// `$ref`, or reached through `components/requestBodies` or
+/// `components/responses`, are left alone.
+fn hoist_operation_schemas(doc: Document, inline_enums: Bool) -> Document {
+  case doc.paths {
+    option.None -> doc
+    option.Some(path_items) -> {
+      let comps = option.unwrap(doc.components, components.new())
+      let #(path_items, schemas) =
+        dict.fold(
+          path_items,
+          #(dict.new(), comps.schemas),
+          fn(state, path, ref) {
+            case ref {
+              reference.Inline(item) -> {
+                let #(item, schemas) =
+                  hoist_path_item(path, item, state.1, inline_enums)
+                #(dict.insert(state.0, path, reference.Inline(item)), schemas)
+              }
+              reference.Reference(_) -> #(
+                dict.insert(state.0, path, ref),
+                state.1,
+              )
+            }
+          },
+        )
+      document.Document(
+        ..doc,
+        paths: option.Some(path_items),
+        components: option.Some(
+          components.Components(..comps, schemas: schemas),
+        ),
+      )
+    }
+  }
+}
+
+fn hoist_path_item(
+  path: String,
+  item: PathItem,
+  schemas: dict.Dict(String, Schema),
+  inline_enums: Bool,
+) -> #(PathItem, dict.Dict(String, Schema)) {
+  let hoist = fn(op: Option(Operation), method: String, schemas) {
+    case op {
+      option.None -> #(option.None, schemas)
+      option.Some(op) -> {
+        let owner =
+          option.unwrap(op.operation_id, method <> "_" <> path)
+          |> naming.to_type_name
+        let #(op, schemas) = hoist_operation(owner, op, schemas, inline_enums)
+        #(option.Some(op), schemas)
+      }
+    }
+  }
+  let #(get, schemas) = hoist(item.get, "get", schemas)
+  let #(put, schemas) = hoist(item.put, "put", schemas)
+  let #(post, schemas) = hoist(item.post, "post", schemas)
+  let #(delete, schemas) = hoist(item.delete, "delete", schemas)
+  let #(options, schemas) = hoist(item.options, "options", schemas)
+  let #(head, schemas) = hoist(item.head, "head", schemas)
+  let #(patch, schemas) = hoist(item.patch, "patch", schemas)
+  let #(trace, schemas) = hoist(item.trace, "trace", schemas)
+  #(
+    operation.PathItem(
+      ..item,
+      get: get,
+      put: put,
+      post: post,
+      delete: delete,
+      options: options,
+      head: head,
+      patch: patch,
+      trace: trace,
+    ),
+    schemas,
+  )
+}
+
+fn hoist_operation(
+  owner: String,
+  op: Operation,
+  schemas: dict.Dict(String, Schema),
+  inline_enums: Bool,
+) -> #(Operation, dict.Dict(String, Schema)) {
+  let #(request_body, schemas) = case op.request_body {
+    option.Some(reference.Inline(rb)) -> {
+      let #(content, schemas) =
+        hoist_content(owner <> "_request", rb.content, schemas, inline_enums)
+      #(
+        option.Some(reference.Inline(
+          request_body.RequestBody(..rb, content: content),
+        )),
+        schemas,
+      )
+    }
+    other -> #(other, schemas)
+  }
+  let #(responses, schemas) =
+    op.responses
+    |> dict.to_list
+    |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+    |> list.fold(#(dict.new(), schemas, False), fn(state, pair) {
+      let #(acc, schemas, named_success) = state
+      let #(status, ref) = pair
+      case ref {
+        reference.Inline(resp) -> {
+          let is_success = string.starts_with(status, "2") && !named_success
+          let base = case is_success {
+            True -> owner <> "_response"
+            False -> owner <> "_response_" <> status
+          }
+          let #(content, schemas) =
+            hoist_content(base, resp.content, schemas, inline_enums)
+          #(
+            dict.insert(
+              acc,
+              status,
+              reference.Inline(response.Response(..resp, content: content)),
+            ),
+            schemas,
+            named_success || is_success,
+          )
+        }
+        reference.Reference(_) -> #(
+          dict.insert(acc, status, ref),
+          schemas,
+          named_success,
+        )
+      }
+    })
+    |> fn(state) { #(state.0, state.1) }
+  #(
+    operation.Operation(..op, request_body: request_body, responses: responses),
+    schemas,
+  )
+}
+
+fn hoist_content(
+  base: String,
+  content: dict.Dict(String, parameter.MediaType),
+  schemas: dict.Dict(String, Schema),
+  inline_enums: Bool,
+) -> #(dict.Dict(String, parameter.MediaType), dict.Dict(String, Schema)) {
+  content
+  |> dict.to_list
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> list.fold(#(dict.new(), schemas), fn(state, pair) {
+    let #(media, mt) = pair
+    case mt.schema {
+      option.Some(reference.Inline(_) as ref) -> {
+        let #(hoisted, schemas) = hoist_ref(base, ref, state.1, inline_enums)
+        #(
+          dict.insert(
+            state.0,
+            media,
+            parameter.MediaType(..mt, schema: option.Some(hoisted)),
+          ),
+          schemas,
+        )
+      }
+      _ -> #(dict.insert(state.0, media, mt), state.1)
+    }
+  })
 }
 
 /// A string enum. Integer enums and nullable enums keep their current type.
@@ -734,6 +965,7 @@ fn build_endpoint(
     responses: responses,
     deprecated: deprecated,
     security: endpoint_security,
+    extensions: op.extensions,
   )
 }
 
@@ -831,6 +1063,10 @@ fn build_param(param: Parameter) -> ir.EndpointParam {
     option.Some(ref_schema) -> ref_schema_to_typeref(ref_schema)
     option.None -> ir.Unknown
   }
+  let constraints = case param.schema {
+    option.Some(reference.Inline(s)) -> schema_constraints(s)
+    _ -> ir.no_constraints()
+  }
   let required = option.unwrap(param.required, False)
 
   ir.EndpointParam(
@@ -839,6 +1075,7 @@ fn build_param(param: Parameter) -> ir.EndpointParam {
     type_ref: type_ref,
     required: required,
     description: param.description,
+    constraints: constraints,
   )
 }
 
