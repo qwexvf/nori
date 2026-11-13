@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- An operation's inline object request or response body is now a named record
+  instead of `Dynamic` (#58): the request body of `sendMessage` is
+  `SendMessageRequest`, its 2xx response `SendMessageResponse`, another status
+  `SendMessageResponse422`, an array's item `...ResponseItem`. Handler and
+  client signatures that took or returned `Dynamic` for such a body change to
+  the record. Bodies reached through `components/requestBodies` or
+  `components/responses` are unchanged.
+
 ## v2.0.0 - 2026-08-25
 
 ### Breaking
