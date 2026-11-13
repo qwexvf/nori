@@ -11,6 +11,7 @@ import gleam/result
 import gleam/string
 import nori/codegen/ir
 import nori/codegen/naming
+import nori/components
 import nori/document.{type Document}
 import nori/operation.{type Operation, type PathItem}
 import nori/parameter.{type Parameter}
@@ -47,6 +48,7 @@ pub fn build(doc: Document) -> ir.CodegenIR {
 
 /// Builds a CodegenIR with the given options.
 pub fn build_with(doc: Document, options: BuildOptions) -> ir.CodegenIR {
+  let doc = hoist_operation_schemas(doc, options.inline_enums)
   let types =
     build_types(doc, options.inline_enums)
     |> fn(types) {
@@ -488,6 +490,177 @@ fn hoist_ref(
         }
       }
   }
+}
+
+/// Moves inline object schemas in operation request and response bodies into
+/// the component schemas and points the operation at them, so a body gets a
+/// record type and a decoder instead of `Dynamic` (#58). The request body of
+/// `sendMessage` becomes `SendMessageRequest`, its 2xx response
+/// `SendMessageResponse`, any other status `SendMessageResponse404`. An array
+/// of inline objects names its item (`...ResponseItem`). Bodies that are a
+/// `$ref`, or reached through `components/requestBodies` or
+/// `components/responses`, are left alone.
+fn hoist_operation_schemas(doc: Document, inline_enums: Bool) -> Document {
+  case doc.paths {
+    option.None -> doc
+    option.Some(path_items) -> {
+      let comps = option.unwrap(doc.components, components.new())
+      let #(path_items, schemas) =
+        dict.fold(
+          path_items,
+          #(dict.new(), comps.schemas),
+          fn(state, path, ref) {
+            case ref {
+              reference.Inline(item) -> {
+                let #(item, schemas) =
+                  hoist_path_item(path, item, state.1, inline_enums)
+                #(dict.insert(state.0, path, reference.Inline(item)), schemas)
+              }
+              reference.Reference(_) -> #(
+                dict.insert(state.0, path, ref),
+                state.1,
+              )
+            }
+          },
+        )
+      document.Document(
+        ..doc,
+        paths: option.Some(path_items),
+        components: option.Some(
+          components.Components(..comps, schemas: schemas),
+        ),
+      )
+    }
+  }
+}
+
+fn hoist_path_item(
+  path: String,
+  item: PathItem,
+  schemas: dict.Dict(String, Schema),
+  inline_enums: Bool,
+) -> #(PathItem, dict.Dict(String, Schema)) {
+  let hoist = fn(op: Option(Operation), method: String, schemas) {
+    case op {
+      option.None -> #(option.None, schemas)
+      option.Some(op) -> {
+        let owner =
+          option.unwrap(op.operation_id, method <> "_" <> path)
+          |> naming.to_type_name
+        let #(op, schemas) = hoist_operation(owner, op, schemas, inline_enums)
+        #(option.Some(op), schemas)
+      }
+    }
+  }
+  let #(get, schemas) = hoist(item.get, "get", schemas)
+  let #(put, schemas) = hoist(item.put, "put", schemas)
+  let #(post, schemas) = hoist(item.post, "post", schemas)
+  let #(delete, schemas) = hoist(item.delete, "delete", schemas)
+  let #(options, schemas) = hoist(item.options, "options", schemas)
+  let #(head, schemas) = hoist(item.head, "head", schemas)
+  let #(patch, schemas) = hoist(item.patch, "patch", schemas)
+  let #(trace, schemas) = hoist(item.trace, "trace", schemas)
+  #(
+    operation.PathItem(
+      ..item,
+      get: get,
+      put: put,
+      post: post,
+      delete: delete,
+      options: options,
+      head: head,
+      patch: patch,
+      trace: trace,
+    ),
+    schemas,
+  )
+}
+
+fn hoist_operation(
+  owner: String,
+  op: Operation,
+  schemas: dict.Dict(String, Schema),
+  inline_enums: Bool,
+) -> #(Operation, dict.Dict(String, Schema)) {
+  let #(request_body, schemas) = case op.request_body {
+    option.Some(reference.Inline(rb)) -> {
+      let #(content, schemas) =
+        hoist_content(owner <> "_request", rb.content, schemas, inline_enums)
+      #(
+        option.Some(reference.Inline(
+          request_body.RequestBody(..rb, content: content),
+        )),
+        schemas,
+      )
+    }
+    other -> #(other, schemas)
+  }
+  let #(responses, schemas) =
+    op.responses
+    |> dict.to_list
+    |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+    |> list.fold(#(dict.new(), schemas, False), fn(state, pair) {
+      let #(acc, schemas, named_success) = state
+      let #(status, ref) = pair
+      case ref {
+        reference.Inline(resp) -> {
+          let is_success = string.starts_with(status, "2") && !named_success
+          let base = case is_success {
+            True -> owner <> "_response"
+            False -> owner <> "_response_" <> status
+          }
+          let #(content, schemas) =
+            hoist_content(base, resp.content, schemas, inline_enums)
+          #(
+            dict.insert(
+              acc,
+              status,
+              reference.Inline(response.Response(..resp, content: content)),
+            ),
+            schemas,
+            named_success || is_success,
+          )
+        }
+        reference.Reference(_) -> #(
+          dict.insert(acc, status, ref),
+          schemas,
+          named_success,
+        )
+      }
+    })
+    |> fn(state) { #(state.0, state.1) }
+  #(
+    operation.Operation(..op, request_body: request_body, responses: responses),
+    schemas,
+  )
+}
+
+fn hoist_content(
+  base: String,
+  content: dict.Dict(String, parameter.MediaType),
+  schemas: dict.Dict(String, Schema),
+  inline_enums: Bool,
+) -> #(dict.Dict(String, parameter.MediaType), dict.Dict(String, Schema)) {
+  content
+  |> dict.to_list
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> list.fold(#(dict.new(), schemas), fn(state, pair) {
+    let #(media, mt) = pair
+    case mt.schema {
+      option.Some(reference.Inline(_) as ref) -> {
+        let #(hoisted, schemas) = hoist_ref(base, ref, state.1, inline_enums)
+        #(
+          dict.insert(
+            state.0,
+            media,
+            parameter.MediaType(..mt, schema: option.Some(hoisted)),
+          ),
+          schemas,
+        )
+      }
+      _ -> #(dict.insert(state.0, media, mt), state.1)
+    }
+  })
 }
 
 /// A string enum. Integer enums and nullable enums keep their current type.
