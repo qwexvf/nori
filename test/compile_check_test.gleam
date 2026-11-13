@@ -1181,3 +1181,58 @@ pub fn main() {
     "score_edge=Error(InvalidQueryParam(\"score\", \"number < 1.5\"))",
   )
 }
+
+/// #58: handlers and client functions for inline bodies compile against the
+/// named records.
+pub fn inline_operation_bodies_output_compiles_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Inline bodies
+  version: '1.0.0'
+paths:
+  /threads/{threadId}/messages:
+    post:
+      operationId: sendMessage
+      parameters:
+        - { name: threadId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string }
+                author: { type: object, properties: { name: { type: string } } }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { id: { type: string } }
+    get:
+      operationId: listMessages
+      parameters:
+        - { name: threadId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties: { text: { type: string } }"
+
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let ir = ir_builder.build(doc)
+  let routes = gleam_routes.generate(ir, "generated")
+  routes |> string.contains("Dynamic") |> should.be_false
+  routes |> string.contains("SendMessageRequest") |> should.be_true
+  ir |> should_compile
+}
