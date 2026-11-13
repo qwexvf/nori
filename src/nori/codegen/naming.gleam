@@ -55,6 +55,27 @@ fn is_upper(c: String) -> Bool {
   c == upper && c != string.lowercase(c)
 }
 
+/// A spec name as a Gleam field label, argument, or local variable.
+///
+/// snake_case alone is not enough: a property called `type` (the standard
+/// member of an RFC 9457 problem) becomes the label `type`, and the generated
+/// record does not parse. Keywords, including the ones Gleam reserves for
+/// future use, get a trailing underscore. Only the identifier changes; the JSON
+/// key and the URL placeholder keep the name from the spec.
+pub fn to_field_name(name: String) -> String {
+  let snake = to_snake_case(name)
+  case list.contains(keywords, snake) {
+    True -> snake <> "_"
+    False -> snake
+  }
+}
+
+const keywords = [
+  "as", "assert", "auto", "case", "const", "delegate", "derive", "echo", "else",
+  "fn", "if", "implement", "import", "let", "macro", "opaque", "panic", "pub",
+  "test", "todo", "type", "use",
+]
+
 /// Turn a schema name into a Gleam type name.
 ///
 /// Schema names are `[a-zA-Z0-9._-]+` in OpenAPI, but a Gleam type name is

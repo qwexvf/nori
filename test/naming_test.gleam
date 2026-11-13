@@ -81,3 +81,11 @@ pub fn references_handles_edges_test() {
   scan.references("$Issue", "Issue") |> should.be_false
   scan.references("Issue2", "Issue") |> should.be_false
 }
+
+pub fn to_field_name_escapes_keywords_test() {
+  naming.to_field_name("type") |> should.equal("type_")
+  naming.to_field_name("Type") |> should.equal("type_")
+  naming.to_field_name("use") |> should.equal("use_")
+  naming.to_field_name("typeName") |> should.equal("type_name")
+  naming.to_field_name("userId") |> should.equal("user_id")
+}

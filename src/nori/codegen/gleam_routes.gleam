@@ -142,13 +142,43 @@ fn generate_header(
     False -> ""
   }
 
+  // A map body or success response shows up as Dict in the handler type.
+  let needs_dict =
+    list.any(ir.endpoints, fn(ep) {
+      let resp_uses =
+        list.any(ep.responses, fn(r) {
+          case string.starts_with(r.status_code, "2"), r.type_ref {
+            True, Some(ref) -> ref_uses_dict(ref)
+            _, _ -> False
+          }
+        })
+      let body_uses = case ep.request_body {
+        Some(b) -> ref_uses_dict(b.type_ref)
+        None -> False
+      }
+      resp_uses || body_uses
+    })
+  let dict_import = case needs_dict {
+    True -> "\nimport gleam/dict.{type Dict}"
+    False -> ""
+  }
+
   // The query helpers below use all of these, so they come as a set rather than
   // per-parameter: a spec with only string parameters still emits the numeric
   // parsers, and a missing import there is a broken generated module.
   string.join([title_comment, "", method_imports], "\n")
+  <> dict_import
   <> dynamic_import
   <> query.imports
   <> types_import
+}
+
+fn ref_uses_dict(ref: TypeRef) -> Bool {
+  case ref {
+    ir.Dict(_, _) -> True
+    Array(item) | Nullable(item) | Optional(item) -> ref_uses_dict(item)
+    _ -> False
+  }
 }
 
 fn ref_uses_unknown(ref: TypeRef) -> Bool {
@@ -191,7 +221,7 @@ fn generate_route_type(endpoints: List(Endpoint)) -> String {
         params -> {
           let fields =
             params
-            |> list.map(fn(p) { to_snake_case(p.name) <> ": String" })
+            |> list.map(fn(p) { naming.to_field_name(p.name) <> ": String" })
             |> string.join(", ")
           "  " <> variant_name <> "(" <> fields <> ")"
         }
@@ -222,7 +252,9 @@ fn generate_match_fn(endpoints: List(Endpoint)) -> String {
           let args =
             params
             |> list.map(fn(p) {
-              to_snake_case(p.name) <> ": " <> to_snake_case(p.name)
+              naming.to_field_name(p.name)
+              <> ": "
+              <> naming.to_field_name(p.name)
             })
             |> string.join(", ")
           variant_name <> "(" <> args <> ")"
@@ -253,7 +285,7 @@ fn path_to_segments_pattern(path: String) -> String {
       case string.starts_with(s, "{") && string.ends_with(s, "}") {
         True -> {
           let name = string.slice(s, 1, string.length(s) - 2)
-          to_snake_case(name)
+          naming.to_field_name(name)
         }
         False -> "\"" <> s <> "\""
       }
@@ -513,7 +545,10 @@ fn generate_query_record(ep: Endpoint, enums: List(String)) -> String {
   let fields =
     query_params(ep)
     |> list.map(fn(p) {
-      "    " <> to_snake_case(p.name) <> ": " <> query_field_type(p, enums)
+      "    "
+      <> naming.to_field_name(p.name)
+      <> ": "
+      <> query_field_type(p, enums)
     })
     |> string.join(",\n")
 
@@ -570,7 +605,7 @@ fn generate_query_parser(ep: Endpoint, enums: List(String)) -> String {
   let bindings =
     params
     |> list.map(fn(p) {
-      let field = to_snake_case(p.name)
+      let field = naming.to_field_name(p.name)
       "  use " <> field <> " <- result.try(" <> query_read_expr(p, enums) <> ")"
     })
     |> string.join("\n")
@@ -579,7 +614,7 @@ fn generate_query_parser(ep: Endpoint, enums: List(String)) -> String {
   // enough and the two cannot drift apart.
   let fields =
     params
-    |> list.map(fn(p) { "    " <> to_snake_case(p.name) <> ":," })
+    |> list.map(fn(p) { "    " <> naming.to_field_name(p.name) <> ":," })
     |> string.join("\n")
 
   "/// Reads "

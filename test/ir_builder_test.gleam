@@ -1,5 +1,6 @@
 import gleam/list
 import gleam/option
+import gleam/string
 import gleeunit/should
 import nori/codegen/ir
 import nori/codegen/ir_builder
@@ -564,4 +565,97 @@ components:
   variants
   |> list.map(fn(v) { v.value })
   |> should.equal(["+", "-", "asc", "in-progress", "in progress"])
+}
+
+fn record_fields(result: ir.CodegenIR, name: String) -> List(ir.Field) {
+  let assert Ok(ir.RecordType(_, fields, _)) =
+    list.find(result.types, fn(t) {
+      case t {
+        ir.RecordType(n, _, _) -> n == name
+        _ -> False
+      }
+    })
+  fields
+}
+
+fn field_summary(fields: List(ir.Field)) -> List(#(String, Bool)) {
+  list.map(fields, fn(f) { #(f.name, f.required) })
+}
+
+/// #48: a `$ref` member of allOf contributes its properties and its required
+/// list; the inline member adds its own; the allOf schema's own `required`
+/// applies to fields from any member.
+pub fn all_of_merges_referenced_schema_test() {
+  let assert Ok(doc) =
+    yaml.parse_yaml(
+      "openapi: '3.1.0'
+info: { title: t, version: '1' }
+paths: {}
+components:
+  schemas:
+    Base:
+      type: object
+      required: [id]
+      properties: { id: { type: string }, note: { type: string } }
+    Card:
+      allOf:
+        - $ref: '#/components/schemas/Base'
+        - type: object
+          required: [title]
+          properties: { title: { type: string } }
+    Detail:
+      required: [body]
+      allOf:
+        - $ref: '#/components/schemas/Card'
+        - type: object
+          properties:
+            body: { type: string }
+            note: { type: integer }",
+    )
+  let result = ir_builder.build(doc)
+
+  record_fields(result, "Card")
+  |> field_summary
+  |> should.equal([#("id", True), #("note", False), #("title", True)])
+
+  // Nested allOf through Card reaches Base; `note` is overridden by the later
+  // member; `body` is required by Detail itself.
+  let detail = record_fields(result, "Detail")
+  detail
+  |> field_summary
+  |> should.equal([
+    #("id", True),
+    #("title", True),
+    #("body", True),
+    #("note", False),
+  ])
+  let assert Ok(note) = list.find(detail, fn(f) { f.name == "note" })
+  note.type_ref |> should.equal(ir.Primitive(ir.PInt))
+}
+
+/// A cycle through allOf stops instead of recursing forever.
+pub fn all_of_cycle_terminates_test() {
+  let assert Ok(doc) =
+    yaml.parse_yaml(
+      "openapi: '3.1.0'
+info: { title: t, version: '1' }
+paths: {}
+components:
+  schemas:
+    A:
+      allOf:
+        - $ref: '#/components/schemas/B'
+        - type: object
+          properties: { a: { type: string } }
+    B:
+      allOf:
+        - $ref: '#/components/schemas/A'
+        - type: object
+          properties: { b: { type: string } }",
+    )
+  let result = ir_builder.build(doc)
+  record_fields(result, "A")
+  |> list.map(fn(f) { f.name })
+  |> list.sort(string.compare)
+  |> should.equal(["a", "b"])
 }

@@ -60,16 +60,28 @@ fn build_types(doc: Document) -> List(ir.TypeDef) {
   case doc.components {
     option.None -> []
     option.Some(components) -> {
-      dict.to_list(components.schemas)
+      let schemas = hoist_inline_objects(components.schemas)
+      dict.to_list(schemas)
       |> list.map(fn(pair) {
         let #(name, schema) = pair
-        schema_to_typedef(naming.to_type_name(name), schema)
+        schema_to_typedef_in(naming.to_type_name(name), schema, schemas)
       })
     }
   }
 }
 
+/// Without the document's components, an `allOf` member that is a `$ref`
+/// cannot be resolved and contributes no fields. Use the IR builder on a whole
+/// document when a schema extends another one.
 pub fn schema_to_typedef(name: String, s: Schema) -> ir.TypeDef {
+  schema_to_typedef_in(name, s, dict.new())
+}
+
+fn schema_to_typedef_in(
+  name: String,
+  s: Schema,
+  schemas: dict.Dict(String, Schema),
+) -> ir.TypeDef {
   // Check for enum
   case s.enum_values {
     option.Some(values) -> {
@@ -82,7 +94,7 @@ pub fn schema_to_typedef(name: String, s: Schema) -> ir.TypeDef {
     option.None -> {
       // Check for allOf
       case s.all_of {
-        [_, ..] -> build_all_of_type(name, s)
+        [_, ..] -> build_all_of_type(name, s, schemas)
         [] -> {
           // Check for oneOf / anyOf
           case s.one_of, s.any_of {
@@ -144,45 +156,114 @@ fn build_record_type(name: String, s: Schema) -> ir.TypeDef {
   ir.RecordType(name: name, fields: fields, description: s.description)
 }
 
-fn build_all_of_type(name: String, s: Schema) -> ir.TypeDef {
+/// An `allOf` is the union of its members' properties: a `$ref` member brings
+/// the referenced schema's fields (and its own `allOf`, recursively), an inline
+/// member its own. A property listed in `required` by any member, or by the
+/// `allOf` schema itself, is required. When two members define the same
+/// property, the later one wins, as in "extend this schema and override a field".
+fn build_all_of_type(
+  name: String,
+  s: Schema,
+  schemas: dict.Dict(String, Schema),
+) -> ir.TypeDef {
+  let collected = all_of_fields(s, schemas, [])
+  let required =
+    list.append(s.required, list.flat_map(collected, fn(c) { c.1 }))
   let fields =
-    list.flat_map(s.all_of, fn(ref_schema) {
-      case ref_schema {
-        reference.Reference(_) -> []
-        reference.Inline(sub_schema) -> {
-          dict.to_list(sub_schema.properties)
-          |> list.map(fn(pair) {
-            let #(field_name, prop_ref) = pair
-            let is_required = list.contains(sub_schema.required, field_name)
-            let #(type_ref, description, read_only, write_only) = case
-              prop_ref
-            {
-              reference.Reference(ref_str) -> #(
-                ref_to_typeref(ref_str),
-                option.None,
-                False,
-                False,
-              )
-              reference.Inline(field_schema) -> {
-                let tr = schema_type_to_typeref(field_schema)
-                let ro = option.unwrap(field_schema.read_only, False)
-                let wo = option.unwrap(field_schema.write_only, False)
-                #(tr, field_schema.description, ro, wo)
-              }
-            }
-            ir.Field(
-              name: field_name,
-              type_ref: type_ref,
-              required: is_required,
-              description: description,
-              read_only: read_only,
-              write_only: write_only,
-            )
-          })
-        }
-      }
+    collected
+    |> list.flat_map(fn(c) { c.0 })
+    |> dedupe_last_wins
+    |> list.map(fn(f) {
+      ir.Field(..f, required: f.required || list.contains(required, f.name))
     })
   ir.RecordType(name: name, fields: fields, description: s.description)
+}
+
+/// Fields and `required` names from each member of `s.all_of`. `seen` holds
+/// the schema names already being expanded, so a cycle stops instead of
+/// recursing forever.
+fn all_of_fields(
+  s: Schema,
+  schemas: dict.Dict(String, Schema),
+  seen: List(String),
+) -> List(#(List(ir.Field), List(String))) {
+  list.map(s.all_of, fn(member) {
+    case member {
+      reference.Reference(ref_str) -> {
+        let target = ref_component_name(ref_str)
+        case list.contains(seen, target), dict.get(schemas, target) {
+          False, Ok(sub) -> schema_fields(sub, schemas, [target, ..seen])
+          _, _ -> #([], [])
+        }
+      }
+      reference.Inline(sub) -> schema_fields(sub, schemas, seen)
+    }
+  })
+}
+
+fn schema_fields(
+  sub: Schema,
+  schemas: dict.Dict(String, Schema),
+  seen: List(String),
+) -> #(List(ir.Field), List(String)) {
+  let nested = all_of_fields(sub, schemas, seen)
+  let own =
+    dict.to_list(sub.properties)
+    |> list.map(fn(pair) {
+      property_field(pair.0, pair.1, list.contains(sub.required, pair.0))
+    })
+  #(
+    list.append(list.flat_map(nested, fn(c) { c.0 }), own),
+    list.append(sub.required, list.flat_map(nested, fn(c) { c.1 })),
+  )
+}
+
+fn property_field(
+  field_name: String,
+  prop_ref: reference.Ref(Schema),
+  is_required: Bool,
+) -> ir.Field {
+  let #(type_ref, description, read_only, write_only) = case prop_ref {
+    reference.Reference(ref_str) -> #(
+      ref_to_typeref(ref_str),
+      option.None,
+      False,
+      False,
+    )
+    reference.Inline(field_schema) -> {
+      let tr = schema_type_to_typeref(field_schema)
+      let ro = option.unwrap(field_schema.read_only, False)
+      let wo = option.unwrap(field_schema.write_only, False)
+      #(tr, field_schema.description, ro, wo)
+    }
+  }
+  ir.Field(
+    name: field_name,
+    type_ref: type_ref,
+    required: is_required,
+    description: description,
+    read_only: read_only,
+    write_only: write_only,
+  )
+}
+
+fn dedupe_last_wins(fields: List(ir.Field)) -> List(ir.Field) {
+  fields
+  |> list.reverse
+  |> list.fold([], fn(acc, f) {
+    case list.any(acc, fn(g: ir.Field) { g.name == f.name }) {
+      True -> acc
+      False -> [f, ..acc]
+    }
+  })
+}
+
+/// "#/components/schemas/Card" → "Card", the key in `components.schemas`.
+fn ref_component_name(ref_str: String) -> String {
+  case string.split(ref_str, "/") {
+    [_, _, _, name] -> name
+    _ -> ref_str
+  }
 }
 
 fn build_union_type(
@@ -220,13 +301,192 @@ pub fn schema_type_to_typeref(s: Schema) -> ir.TypeRef {
     option.Some(ref_str) -> ref_to_typeref(ref_str)
     option.None -> {
       case s.schema_type {
-        option.None -> ir.Unknown
+        option.None -> composed_typeref(s)
         option.Some(schema.SingleType(json_type)) ->
           json_type_to_typeref(json_type, s)
         option.Some(schema.MultipleTypes(types)) ->
           multiple_types_to_typeref(types, s)
       }
     }
+  }
+}
+
+/// A schema with no `type` of its own, built from others. Two shapes have an
+/// exact type: OpenAPI 3.1's nullable reference, `oneOf`/`anyOf` of one schema
+/// and `{type: 'null'}` (3.1 drops `nullable`, and `$ref` cannot have siblings),
+/// and an `allOf` with a single member, the usual way to put a description on a
+/// `$ref`. Anything else stays Unknown.
+fn composed_typeref(s: Schema) -> ir.TypeRef {
+  case s.one_of, s.any_of, s.all_of {
+    [_, _] as members, [], [] | [], [_, _] as members, [] ->
+      case list.partition(members, is_null_schema) {
+        #([_], [other]) -> ir.Nullable(ref_schema_to_typeref(other))
+        _ -> ir.Unknown
+      }
+    [], [], [single] -> ref_schema_to_typeref(single)
+    _, _, _ -> ir.Unknown
+  }
+}
+
+fn is_null_schema(member: reference.Ref(Schema)) -> Bool {
+  case member {
+    reference.Inline(sub) ->
+      sub.schema_type == option.Some(schema.SingleType(schema.TypeNull))
+    reference.Reference(_) -> False
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Inline object schemas
+// ---------------------------------------------------------------------------
+
+/// Gives every inline object schema under the component schemas a name of its
+/// own and replaces it with a `$ref`, so it becomes a record type with a
+/// decoder instead of `Dynamic`. A property `skills` on `CvImport` becomes
+/// `CvImportSkills`; an array's item becomes `...Item`. A nullable inline
+/// object becomes a nullable reference. A name already taken gets a number.
+fn hoist_inline_objects(
+  schemas: dict.Dict(String, Schema),
+) -> dict.Dict(String, Schema) {
+  dict.fold(schemas, schemas, fn(acc, name, s) {
+    let #(hoisted, acc) = hoist_schema(name, s, acc)
+    dict.insert(acc, name, hoisted)
+  })
+}
+
+fn hoist_schema(
+  owner: String,
+  s: Schema,
+  acc: dict.Dict(String, Schema),
+) -> #(Schema, dict.Dict(String, Schema)) {
+  let #(properties, acc) =
+    dict.fold(s.properties, #(dict.new(), acc), fn(state, field, ref) {
+      let #(hoisted, acc) = hoist_ref(owner <> "_" <> field, ref, state.1)
+      #(dict.insert(state.0, field, hoisted), acc)
+    })
+  let #(items, acc) = case s.items {
+    option.Some(ref) -> {
+      let #(hoisted, acc) = hoist_ref(owner <> "_item", ref, acc)
+      #(option.Some(hoisted), acc)
+    }
+    option.None -> #(option.None, acc)
+  }
+  // Inline allOf members stay inline (their fields merge into the owner), but
+  // objects nested inside them still need names.
+  let #(all_of, acc) =
+    list.fold(s.all_of, #([], acc), fn(state, member) {
+      case member {
+        reference.Inline(sub) -> {
+          let #(hoisted, acc) = hoist_schema(owner, sub, state.1)
+          #([reference.Inline(hoisted), ..state.0], acc)
+        }
+        reference.Reference(_) -> #([member, ..state.0], state.1)
+      }
+    })
+  #(
+    schema.Schema(
+      ..s,
+      properties: properties,
+      items: items,
+      all_of: list.reverse(all_of),
+    ),
+    acc,
+  )
+}
+
+fn hoist_ref(
+  base_name: String,
+  ref: reference.Ref(Schema),
+  acc: dict.Dict(String, Schema),
+) -> #(reference.Ref(Schema), dict.Dict(String, Schema)) {
+  case ref {
+    reference.Reference(_) -> #(ref, acc)
+    reference.Inline(sub) ->
+      case inline_object_kind(sub) {
+        NotAnObject -> {
+          let #(hoisted, acc) = hoist_schema(base_name, sub, acc)
+          #(reference.Inline(hoisted), acc)
+        }
+        PlainObject | NullableObject -> {
+          let name = unused_name(base_name, acc, 1)
+          let object =
+            schema.Schema(
+              ..sub,
+              schema_type: option.Some(schema.SingleType(schema.TypeObject)),
+            )
+          // Reserve the name before descending, so a nested object cannot
+          // take it.
+          let acc = dict.insert(acc, name, object)
+          let #(hoisted, acc) = hoist_schema(name, object, acc)
+          let acc = dict.insert(acc, name, hoisted)
+          let named = reference.Reference("#/components/schemas/" <> name)
+          case inline_object_kind(sub) {
+            NullableObject -> #(
+              reference.Inline(
+                schema.Schema(..schema.empty(), one_of: [
+                  named,
+                  reference.Inline(
+                    schema.Schema(
+                      ..schema.empty(),
+                      schema_type: option.Some(schema.SingleType(
+                        schema.TypeNull,
+                      )),
+                    ),
+                  ),
+                ]),
+              ),
+              acc,
+            )
+            _ -> #(named, acc)
+          }
+        }
+      }
+  }
+}
+
+type InlineObjectKind {
+  PlainObject
+  NullableObject
+  NotAnObject
+}
+
+/// An object with named properties. A map (`additionalProperties` only) stays
+/// a Dict.
+fn inline_object_kind(s: Schema) -> InlineObjectKind {
+  case dict.is_empty(s.properties), s.schema_type {
+    True, _ -> NotAnObject
+    False, option.None -> PlainObject
+    False, option.Some(schema.SingleType(schema.TypeObject)) -> PlainObject
+    False, option.Some(schema.MultipleTypes(types)) ->
+      case
+        list.contains(types, schema.TypeObject),
+        list.contains(types, schema.TypeNull)
+      {
+        True, True -> NullableObject
+        True, False -> PlainObject
+        False, _ -> NotAnObject
+      }
+    False, _ -> NotAnObject
+  }
+}
+
+fn unused_name(
+  base: String,
+  taken: dict.Dict(String, Schema),
+  n: Int,
+) -> String {
+  let candidate = case n {
+    1 -> base
+    _ -> base <> int.to_string(n)
+  }
+  let clashes =
+    dict.has_key(taken, candidate)
+    || list.any(dict.keys(taken), fn(k) {
+      naming.to_type_name(k) == naming.to_type_name(candidate)
+    })
+  case clashes {
+    True -> unused_name(base, taken, n + 1)
+    False -> candidate
   }
 }
 
