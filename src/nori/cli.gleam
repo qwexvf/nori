@@ -242,7 +242,8 @@ fn generate_command() -> glint.Command(Nil) {
         False -> halt(1)
         True -> {
           info(v, "Building IR...")
-          let codegen_ir = ir_builder.build(doc)
+          let codegen_ir =
+            ir_builder.build_with(doc, build_options(cfg.output.gleam))
 
           let files =
             generate_files_from_config(codegen_ir, cfg, target_val, output_dir)
@@ -445,6 +446,22 @@ fn suffix(tc: TargetConfig, base: String, ext: String) -> String {
     True -> base <> ".generated" <> ext
     False -> base <> ext
   }
+}
+
+/// Opt-in changes to the generated types, from the gleam target's options:
+///
+/// ```yaml
+/// output:
+///   gleam:
+///     inline_enums: true    # inline `enum` → named enum type instead of String
+///     single_option: true   # optional + nullable → Option(T), not Option(Option(T))
+/// ```
+fn build_options(tc: TargetConfig) -> ir_builder.BuildOptions {
+  let on = fn(key) { dict.get(tc.options, key) == Ok("true") }
+  ir_builder.BuildOptions(
+    inline_enums: on("inline_enums"),
+    single_option: on("single_option"),
+  )
 }
 
 fn ts_config_from_options(tc: TargetConfig) -> ts_types.Config {
