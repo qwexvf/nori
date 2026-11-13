@@ -6,6 +6,13 @@
 
 - `ir.Field` and `ir.EndpointParam` have a new `constraints: ir.Constraints`
   field. Code that builds them adds `constraints: ir.no_constraints()`.
+- An operation's inline object request or response body is now a named record
+  instead of `Dynamic` (#58): the request body of `sendMessage` is
+  `SendMessageRequest`, its 2xx response `SendMessageResponse`, another status
+  `SendMessageResponse422`, an array's item `...ResponseItem`. Handler and
+  client signatures that took or returned `Dynamic` for such a body change to
+  the record. Bodies reached through `components/requestBodies` or
+  `components/responses` are unchanged.
 
 ### Added
 
