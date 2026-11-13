@@ -20,6 +20,7 @@ fn param(
     type_ref: type_ref,
     required: True,
     description: None,
+    constraints: ir.no_constraints(),
   )
 }
 
@@ -126,6 +127,7 @@ pub fn client_non_enum_named_param_untouched_test() {
           description: None,
           read_only: False,
           write_only: False,
+          constraints: ir.no_constraints(),
         ),
       ],
       description: None,

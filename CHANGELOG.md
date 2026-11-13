@@ -4,6 +4,8 @@
 
 ### Breaking
 
+- `ir.Field` and `ir.EndpointParam` have a new `constraints: ir.Constraints`
+  field. Code that builds them adds `constraints: ir.no_constraints()`.
 - An operation's inline object request or response body is now a named record
   instead of `Dynamic` (#58): the request body of `sendMessage` is
   `SendMessageRequest`, its 2xx response `SendMessageResponse`, another status
@@ -11,6 +13,14 @@
   client signatures that took or returned `Dynamic` for such a body change to
   the record. Bodies reached through `components/requestBodies` or
   `components/responses` are unchanged.
+
+### Added
+
+- Validation constraints (#3). The IR carries `minimum`, `maximum`,
+  `exclusiveMinimum`, `exclusiveMaximum`, `minLength`, `maxLength`, `pattern`,
+  `minItems`, `maxItems` and an array's element constraints. The Gleam record
+  decoders and query readers reject values outside them (string length in code
+  points). `pattern`, `multipleOf` and `uniqueItems` are not enforced.
 
 ## v2.0.0 - 2026-08-25
 

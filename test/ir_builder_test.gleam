@@ -664,6 +664,53 @@ components:
   |> should.equal(["a", "b"])
 }
 
+/// #3: a field's and a parameter's validation keywords reach the IR, with an
+/// array's element constraints under `items`.
+pub fn constraints_reach_the_ir_test() {
+  let assert Ok(doc) =
+    yaml.parse_yaml(
+      "openapi: '3.1.0'
+info: { title: t, version: '1' }
+paths:
+  /jobs:
+    get:
+      operationId: searchJobs
+      parameters:
+        - { name: days, in: query, schema: { type: array, maxItems: 5, items: { type: integer, minimum: 1 } } }
+      responses:
+        '204': { description: OK }
+components:
+  schemas:
+    Message:
+      type: object
+      properties:
+        text: { type: string, minLength: 1, maxLength: 4000, pattern: '^a' }",
+    )
+  let result = ir_builder.build(doc)
+  let assert [text] = record_fields(result, "Message")
+  text.constraints
+  |> should.equal(
+    ir.Constraints(
+      ..ir.no_constraints(),
+      min_length: option.Some(1),
+      max_length: option.Some(4000),
+      pattern: option.Some("^a"),
+    ),
+  )
+  let assert [ep] = result.endpoints
+  let assert [days] = ep.parameters
+  days.constraints
+  |> should.equal(
+    ir.Constraints(
+      ..ir.no_constraints(),
+      max_items: option.Some(5),
+      items: option.Some(
+        ir.Constraints(..ir.no_constraints(), minimum: option.Some(1.0)),
+      ),
+    ),
+  )
+}
+
 /// #58: inline object bodies get names from the operation, so they decode into
 /// records instead of Dynamic.
 pub fn inline_operation_bodies_are_named_test() {

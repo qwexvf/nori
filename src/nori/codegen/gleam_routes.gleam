@@ -6,6 +6,7 @@
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import nori/codegen/gleam_constraints
 import nori/codegen/ir.{
   type CodegenIR, type Endpoint, type TypeRef, Array, Delete, Get, Head, Named,
   Nullable, Optional, Options, Patch, Post, Primitive, Put,
@@ -448,7 +449,7 @@ fn build_query_section(ir: CodegenIR, module_prefix: String) -> QuerySection {
 
       QuerySection(
         code: code,
-        imports: query_imports(params, kept),
+        imports: query_imports(params, kept, enums),
         enum_types: params
           |> list.filter_map(fn(p) {
             case query_enum_of(p, enums) {
@@ -467,8 +468,24 @@ fn build_query_section(ir: CodegenIR, module_prefix: String) -> QuerySection {
 /// pass, never by searching the rendered text: an import that disagrees with the
 /// code is either a warning or a missing module, and both land in a file the
 /// consumer cannot edit.
-fn query_imports(params: List(ir.EndpointParam), kept: List(String)) -> String {
+fn query_imports(
+  params: List(ir.EndpointParam),
+  kept: List(String),
+  enums: List(String),
+) -> String {
   let keep = fn(name) { list.contains(kept, name) }
+  // A string length check counts code points with string.to_utf_codepoints.
+  let strings = case
+    list.any(params, fn(p) {
+      let #(value_checks, _) = query_checks(p, enums)
+      list.any(value_checks, fn(c) {
+        string.contains(c.condition, "string.to_utf_codepoints(")
+      })
+    })
+  {
+    True -> ["\nimport gleam/string"]
+    False -> []
+  }
 
   let floats = case keep("parse_float_param") {
     True -> ["\nimport gleam/float"]
@@ -495,6 +512,7 @@ fn query_imports(params: List(ir.EndpointParam), kept: List(String)) -> String {
       ["\nimport gleam/list"],
       options,
       ["\nimport gleam/result"],
+      strings,
     ]),
   )
 }
@@ -637,17 +655,70 @@ fn generate_query_parser(ep: Endpoint, enums: List(String)) -> String {
 
 fn query_read_expr(p: ir.EndpointParam, enums: List(String)) -> String {
   let name = "\"" <> p.name <> "\""
+  let #(value_checks, count_checks) = query_checks(p, enums)
   let parse = case query_enum_of(p, enums) {
     Some(enum_name) -> enum_parser_name(enum_name)
     None -> query_parser_fn(param_base_primitive(p))
   }
+  let parse = case value_checks {
+    [] -> parse
+    _ ->
+      "fn(name, raw) {\n    use v <- result.try("
+      <> parse
+      <> "(name, raw))\n    case "
+      <> gleam_constraints.condition(value_checks)
+      <> " {\n      True -> Ok(v)\n      False -> Error(InvalidQueryParam(name, \""
+      <> gleam_constraints.describe(
+        gleam_constraints.type_name(param_base_primitive(p)),
+        value_checks,
+      )
+      <> "\"))\n    }\n  }"
+  }
 
-  case ir.strip_optional(p.type_ref), p.required {
+  let read = case ir.strip_optional(p.type_ref), p.required {
     Array(_), True ->
       "query_required_list(params, " <> name <> ", " <> parse <> ")"
     Array(_), False -> "query_list(params, " <> name <> ", " <> parse <> ")"
     _, True -> "query_required(params, " <> name <> ", " <> parse <> ")"
     _, False -> "query_optional(params, " <> name <> ", " <> parse <> ")"
+  }
+  case count_checks {
+    [] -> read
+    _ ->
+      read
+      <> "\n  |> result.try(fn(v) {\n    case "
+      <> gleam_constraints.condition(count_checks)
+      <> " {\n      True -> Ok(v)\n      False -> Error(InvalidQueryParam("
+      <> name
+      <> ", \""
+      <> gleam_constraints.describe("array", count_checks)
+      <> "\"))\n    }\n  })"
+  }
+}
+
+/// The checks a query parameter's value (each element, for a list) and its
+/// element count must pass. An enum parameter is already limited to its
+/// members, so it gets none.
+fn query_checks(
+  p: ir.EndpointParam,
+  enums: List(String),
+) -> #(List(gleam_constraints.Check), List(gleam_constraints.Check)) {
+  case query_enum_of(p, enums) {
+    Some(_) -> #([], [])
+    None -> {
+      let prim = param_base_primitive(p)
+      case ir.strip_optional(p.type_ref) {
+        Array(_) -> #(
+          gleam_constraints.scalar_checks(
+            option.unwrap(p.constraints.items, ir.no_constraints()),
+            prim,
+            "v",
+          ),
+          gleam_constraints.count_checks(p.constraints, "v"),
+        )
+        _ -> #(gleam_constraints.scalar_checks(p.constraints, prim, "v"), [])
+      }
+    }
   }
 }
 

@@ -162,28 +162,10 @@ fn build_record_type(name: String, s: Schema) -> ir.TypeDef {
     dict.to_list(s.properties)
     |> list.map(fn(pair) {
       let #(field_name, ref_schema) = pair
-      let is_required = list.contains(s.required, field_name)
-      let #(type_ref, description, read_only, write_only) = case ref_schema {
-        reference.Reference(ref_str) -> #(
-          ref_to_typeref(ref_str),
-          option.None,
-          False,
-          False,
-        )
-        reference.Inline(field_schema) -> {
-          let tr = schema_type_to_typeref(field_schema)
-          let ro = option.unwrap(field_schema.read_only, False)
-          let wo = option.unwrap(field_schema.write_only, False)
-          #(tr, field_schema.description, ro, wo)
-        }
-      }
-      ir.Field(
-        name: field_name,
-        type_ref: type_ref,
-        required: is_required,
-        description: description,
-        read_only: read_only,
-        write_only: write_only,
+      property_field(
+        field_name,
+        ref_schema,
+        list.contains(s.required, field_name),
       )
     })
   ir.RecordType(name: name, fields: fields, description: s.description)
@@ -256,18 +238,21 @@ fn property_field(
   prop_ref: reference.Ref(Schema),
   is_required: Bool,
 ) -> ir.Field {
-  let #(type_ref, description, read_only, write_only) = case prop_ref {
+  let #(type_ref, description, read_only, write_only, constraints) = case
+    prop_ref
+  {
     reference.Reference(ref_str) -> #(
       ref_to_typeref(ref_str),
       option.None,
       False,
       False,
+      ir.no_constraints(),
     )
     reference.Inline(field_schema) -> {
       let tr = schema_type_to_typeref(field_schema)
       let ro = option.unwrap(field_schema.read_only, False)
       let wo = option.unwrap(field_schema.write_only, False)
-      #(tr, field_schema.description, ro, wo)
+      #(tr, field_schema.description, ro, wo, schema_constraints(field_schema))
     }
   }
   ir.Field(
@@ -277,6 +262,28 @@ fn property_field(
     description: description,
     read_only: read_only,
     write_only: write_only,
+    constraints: constraints,
+  )
+}
+
+/// The validation keywords of `s`, and of its inline `items` for an array.
+/// A `$ref`'d schema's constraints belong to that type, not to this use of it.
+fn schema_constraints(s: Schema) -> ir.Constraints {
+  ir.Constraints(
+    minimum: s.minimum,
+    maximum: s.maximum,
+    exclusive_minimum: s.exclusive_minimum,
+    exclusive_maximum: s.exclusive_maximum,
+    min_length: s.min_length,
+    max_length: s.max_length,
+    pattern: s.pattern,
+    min_items: s.min_items,
+    max_items: s.max_items,
+    items: case s.items {
+      option.Some(reference.Inline(item)) ->
+        option.Some(schema_constraints(item))
+      _ -> option.None
+    },
   )
 }
 
@@ -1004,6 +1011,10 @@ fn build_param(param: Parameter) -> ir.EndpointParam {
     option.Some(ref_schema) -> ref_schema_to_typeref(ref_schema)
     option.None -> ir.Unknown
   }
+  let constraints = case param.schema {
+    option.Some(reference.Inline(s)) -> schema_constraints(s)
+    _ -> ir.no_constraints()
+  }
   let required = option.unwrap(param.required, False)
 
   ir.EndpointParam(
@@ -1012,6 +1023,7 @@ fn build_param(param: Parameter) -> ir.EndpointParam {
     type_ref: type_ref,
     required: required,
     description: param.description,
+    constraints: constraints,
   )
 }
 
