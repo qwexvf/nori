@@ -40,6 +40,10 @@
   encoder. Without a discriminator the decoder keeps the first member that
   decodes. Previously none was emitted, so a record field typed with a union
   called a decoder that did not exist.
+- `generate` runs `gleam format` over the Gleam files it writes, using the
+  `gleam` on PATH, so the output passes `gleam format --check` (#36). It never
+  fails the run: without `gleam` on PATH it prints a note, and a formatter
+  error is printed as a warning. `--no-format` skips it.
 
 ## v2.0.0 - 2026-08-25
 
