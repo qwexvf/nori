@@ -43,7 +43,7 @@ gleam run -m nori/cli -- validate spec.yaml --format=json  # machine-readable di
 
 Every command exits non-zero on error, so they work in CI. `--spec=-` (and `validate -`) read the spec from stdin.
 
-`generate` aborts by default when the spec uses features nori can't generate correctly (`discriminator` polymorphism, callbacks, `multipart/form-data`, `deepObject` params, etc.). Pass `--allow-unsupported` to generate anyway, with degraded output.
+`generate` aborts by default when the spec uses features nori can't generate correctly (`discriminator` without `$ref` members, callbacks, `multipart/form-data`, `deepObject` params, etc.). Pass `--allow-unsupported` to generate anyway, with degraded output.
 
 ## Config
 
@@ -220,7 +220,7 @@ Planned add-on packages: `nori_oauth` (OAuth2 / OIDC), `nori_multipart` (multipa
 
 The capability check catches these, and generation stops unless you pass `--allow-unsupported`:
 
-- `discriminator` polymorphism ([#14](https://github.com/qwexvf/nori/issues/14))
+- `discriminator` on a base schema reached through `allOf` (inheritance), or over inline `oneOf`/`anyOf` members. A discriminator over `$ref` members is supported: the Gleam target emits one variant per member and a decoder that dispatches on the tag.
 - Callbacks / webhooks codegen
 - `multipart/form-data` and `application/x-www-form-urlencoded` request bodies ([#13](https://github.com/qwexvf/nori/issues/13))
 - Parameter styles `deepObject`, `pipeDelimited`, `spaceDelimited`

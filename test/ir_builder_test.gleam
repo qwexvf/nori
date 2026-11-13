@@ -663,3 +663,52 @@ components:
   |> list.sort(string.compare)
   |> should.equal(["a", "b"])
 }
+
+/// #14: explicit mapping entries (full `$ref` or bare name, several tags for
+/// one member) and the implicit schema-name tag for a member with no entry.
+pub fn discriminator_mapping_is_resolved_test() {
+  let assert Ok(doc) =
+    yaml.parse_yaml(
+      "openapi: '3.1.0'
+info: { title: t, version: '1' }
+paths: {}
+components:
+  schemas:
+    Message:
+      oneOf:
+        - $ref: '#/components/schemas/TextMessage'
+        - $ref: '#/components/schemas/EventMessage'
+        - $ref: '#/components/schemas/system_message'
+      discriminator:
+        propertyName: kind
+        mapping:
+          text: '#/components/schemas/TextMessage'
+          event: EventMessage
+          meeting: '#/components/schemas/EventMessage'
+    TextMessage:
+      type: object
+      properties: { kind: { type: string } }
+    EventMessage:
+      type: object
+      properties: { kind: { type: string } }
+    system_message:
+      type: object
+      properties: { kind: { type: string } }",
+    )
+  let result = ir_builder.build(doc)
+  let assert Ok(ir.UnionType(discriminator: option.Some(d), ..)) =
+    list.find(result.types, fn(t) {
+      case t {
+        ir.UnionType(name: "Message", ..) -> True
+        _ -> False
+      }
+    })
+  d.property |> should.equal("kind")
+  d.mapping
+  |> should.equal([
+    #("text", ir.Named("TextMessage")),
+    #("event", ir.Named("EventMessage")),
+    #("meeting", ir.Named("EventMessage")),
+    #("system_message", ir.Named("SystemMessage")),
+  ])
+}

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- `ir.UnionType.discriminator` is now `Option(ir.Discriminator)`, carrying the
+  tag property and the resolved tag-to-member mapping, instead of the property
+  name alone. Code that only matched `UnionType(..)` is unaffected.
+
+### Added
+
+- `discriminator` over `oneOf`/`anyOf` members that are all `$ref`s is no
+  longer blocked by the capability check (#14). The Gleam target emits a
+  decoder that reads the tag and decodes the member it maps to, honouring
+  explicit `mapping` entries (full `$ref` or bare name, several tags per
+  member) and the implicit schema-name tag.
+- Gleam unions whose members are all named types now get a decoder and an
+  encoder. Without a discriminator the decoder keeps the first member that
+  decodes. Previously none was emitted, so a record field typed with a union
+  called a decoder that did not exist.
+
 ## v2.0.0 - 2026-08-25
 
 ### Breaking

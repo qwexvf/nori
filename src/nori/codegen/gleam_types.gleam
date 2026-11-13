@@ -366,9 +366,133 @@ fn generate_decoder(typedef: TypeDef) -> String {
   case typedef {
     RecordType(name, fields, _) -> generate_record_decoder(name, fields)
     EnumType(name, variants, _) -> generate_enum_decoder(name, variants)
-    UnionType(..) -> ""
+    UnionType(name, members, discriminator, _) ->
+      generate_union_decoder(name, members, discriminator)
     AliasType(..) -> ""
   }
+}
+
+/// The names of a union's members, or `Error` when any member is not a named
+/// type. A member like a list or a primitive has no constructor name that
+/// compiles (`List(String)Variant`), so those unions get a type and nothing
+/// that would have to name the members.
+fn named_members(members: List(TypeRef)) -> Result(List(String), Nil) {
+  list.try_map(members, fn(m) {
+    case m {
+      Named(name) -> Ok(name)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn generate_union_decoder(
+  name: String,
+  members: List(TypeRef),
+  discriminator: Option(ir.Discriminator),
+) -> String {
+  case named_members(members), discriminator {
+    Ok([first, ..rest]), None -> untagged_union_decoder(name, first, rest)
+    Ok(names), Some(d) -> tagged_union_decoder(name, names, d)
+    _, _ -> ""
+  }
+}
+
+/// Tries each member in order and keeps the first that decodes, which is what
+/// `oneOf` without a discriminator can promise: OpenAPI wants exactly one to
+/// match, but checking that would decode every member every time.
+fn untagged_union_decoder(
+  name: String,
+  first: String,
+  rest: List(String),
+) -> String {
+  let variant = fn(member) {
+    to_snake_case(member) <> "_decoder() |> decode.map(" <> member <> "Variant)"
+  }
+  let others =
+    rest
+    |> list.map(fn(m) { "    " <> variant(m) <> ",\n" })
+    |> string.concat
+
+  "pub fn "
+  <> to_snake_case(name)
+  <> "_decoder() -> Decoder("
+  <> name
+  <> ") {\n  decode.one_of(\n    "
+  <> variant(first)
+  <> ",\n    [\n"
+  <> string.replace(others, "    ", "      ")
+  <> "    ],\n  )\n}"
+}
+
+/// Reads the tag, then decodes the whole object as the member it names.
+///
+/// An unknown tag is rejected while reading the tag, so the first error names
+/// the property that is wrong. Failing anywhere else would need a zero value of
+/// the union, which a record member does not have; the dispatch therefore ends
+/// on a catch-all, and an unknown tag also reports that member's missing fields
+/// after the tag error.
+fn tagged_union_decoder(
+  name: String,
+  names: List(String),
+  d: ir.Discriminator,
+) -> String {
+  let arms =
+    list.filter_map(names, fn(member) {
+      let tags =
+        list.filter_map(d.mapping, fn(pair) {
+          case pair.1 == Named(member) {
+            True -> Ok(string_literal(pair.0))
+            False -> Error(Nil)
+          }
+        })
+      case tags {
+        [] -> Error(Nil)
+        _ -> Ok(#(tags, member))
+      }
+    })
+  case list.reverse(arms) {
+    [] -> ""
+    [#(_, last), ..earlier_reversed] -> {
+      let all_tags = list.flat_map(arms, fn(arm) { arm.0 })
+      let dispatch =
+        list.reverse(earlier_reversed)
+        |> list.map(fn(arm) {
+          "    "
+          <> string.join(arm.0, " | ")
+          <> " ->\n      "
+          <> to_snake_case(arm.1)
+          <> "_decoder() |> decode.map("
+          <> arm.1
+          <> "Variant)\n"
+        })
+        |> string.concat
+      "pub fn "
+      <> to_snake_case(name)
+      <> "_decoder() -> Decoder("
+      <> name
+      <> ") {\n  use tag <- decode.field(\n    "
+      <> string_literal(d.property)
+      <> ",\n    decode.string\n      |> decode.then(fn(tag) {\n        case tag {\n          "
+      <> string.join(all_tags, " | ")
+      <> " -> decode.success(tag)\n          _ -> decode.failure(tag, "
+      <> string_literal(name <> "." <> d.property)
+      <> ")\n        }\n      }),\n  )\n  case tag {\n"
+      <> dispatch
+      <> "    _ -> "
+      <> to_snake_case(last)
+      <> "_decoder() |> decode.map("
+      <> last
+      <> "Variant)\n  }\n}"
+    }
+  }
+}
+
+fn string_literal(value: String) -> String {
+  let escaped =
+    value
+    |> string.replace("\\", "\\\\")
+    |> string.replace("\"", "\\\"")
+  "\"" <> escaped <> "\""
 }
 
 fn generate_record_decoder(name: String, fields: List(Field)) -> String {
@@ -483,7 +607,7 @@ fn generate_encoder(typedef: TypeDef) -> String {
   case typedef {
     RecordType(name, fields, _) -> generate_record_encoder(name, fields)
     EnumType(name, _variants, _) -> generate_enum_encoder(name)
-    UnionType(..) -> ""
+    UnionType(name, members, _, _) -> generate_union_encoder(name, members)
     AliasType(..) -> ""
   }
 }
@@ -552,6 +676,33 @@ fn type_ref_encoder(expr: String, ref: TypeRef) -> String {
       <> " None -> json.null() }"
     Literal(value) -> "json.string(\"" <> value <> "\")"
     Unknown -> "json.null()"
+  }
+}
+
+/// Each member encodes itself. A tagged member's own schema declares the tag
+/// property (OpenAPI requires it), so its encoder already writes the tag.
+fn generate_union_encoder(name: String, members: List(TypeRef)) -> String {
+  case named_members(members) {
+    Ok([_, ..] as names) -> {
+      let arms =
+        names
+        |> list.map(fn(member) {
+          "    "
+          <> member
+          <> "Variant(v) -> encode_"
+          <> to_snake_case(member)
+          <> "(v)\n"
+        })
+        |> string.concat
+      "pub fn encode_"
+      <> to_snake_case(name)
+      <> "(value: "
+      <> name
+      <> ") -> Json {\n  case value {\n"
+      <> arms
+      <> "  }\n}"
+    }
+    _ -> ""
   }
 }
 
