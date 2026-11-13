@@ -470,11 +470,7 @@ fn inline_object_kind(s: Schema) -> InlineObjectKind {
   }
 }
 
-fn unused_name(
-  base: String,
-  taken: dict.Dict(String, Schema),
-  n: Int,
-) -> String {
+fn unused_name(base: String, taken: dict.Dict(String, Schema), n: Int) -> String {
   let candidate = case n {
     1 -> base
     _ -> base <> int.to_string(n)
