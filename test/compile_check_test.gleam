@@ -929,6 +929,82 @@ components:
   ir |> should_compile
 }
 
+const options_spec = "openapi: '3.1.0'
+info:
+  title: Options
+  version: '1.0.0'
+paths:
+  /msgs:
+    get:
+      operationId: listMsgs
+      parameters:
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: ['new', 'old']
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Msg'
+components:
+  schemas:
+    Msg:
+      type: object
+      required: ['kind', 'note']
+      properties:
+        kind:
+          type: string
+          enum: ['text', 'slots', 'event']
+        tags:
+          type: array
+          items:
+            type: string
+            enum: ['urgent', 'later']
+        note:
+          type: [string, 'null']
+        maybe:
+          type: [integer, 'null']
+        author:
+          type: object
+          properties:
+            role:
+              type: string
+              enum: ['engineer', 'agent']"
+
+/// #50 and #51 are opt-in: the defaults keep the earlier output.
+pub fn build_options_default_keeps_output_test() {
+  let assert Ok(doc) = yaml.parse_yaml(options_spec)
+  let types = ir_builder.build(doc) |> gleam_types.generate
+  types |> string.contains("kind: String") |> should.be_true
+  types |> string.contains("maybe: Option(Option(Int))") |> should.be_true
+}
+
+/// #51: inline enums become named enum types; #50: optional and nullable is a
+/// single Option.
+pub fn build_options_output_compiles_test() {
+  let assert Ok(doc) = yaml.parse_yaml(options_spec)
+  let ir =
+    ir_builder.build_with(
+      doc,
+      ir_builder.BuildOptions(inline_enums: True, single_option: True),
+    )
+  let types = gleam_types.generate(ir)
+  types |> string.contains("kind: MsgKind") |> should.be_true
+  types |> string.contains("tags: Option(List(MsgTagsItem))") |> should.be_true
+  types |> string.contains("role: Option(MsgAuthorRole)") |> should.be_true
+  types |> string.contains("maybe: Option(Int)") |> should.be_true
+  // A required nullable field is unchanged.
+  types |> string.contains("note: Option(String)") |> should.be_true
+  types |> string.contains("Option(Option(") |> should.be_false
+  ir |> should_compile
+}
+
 pub fn client_imports_nothing_it_does_not_use_test() {
   let yaml_str =
     "openapi: '3.1.0'

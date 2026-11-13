@@ -91,6 +91,20 @@ output:
     types_module: shared/generated       # what routes/client import types by
 ```
 
+### Opt-in type shapes
+
+Two options change the shape of the generated types, so they are off by default:
+
+```yaml
+output:
+  gleam:
+    inline_enums: true    # an inline `enum` on a property gets a named type
+    single_option: true   # optional and nullable is Option(T), not Option(Option(T))
+```
+
+- `inline_enums`: `kind: { type: string, enum: [text, slots] }` on `Msg` becomes `kind: MsgKind` with `msg_kind_from_string` and `msg_kind_to_string`, instead of `String`. Array items become `...Item`.
+- `single_option`: a property that is not `required` and whose type allows `null` decodes absent and `null` both to `None`. Leave it off if your API treats those two differently, as some PATCH endpoints do.
+
 See `nori.config.example.yaml` for every option.
 
 ## What it generates

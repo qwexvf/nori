@@ -42,6 +42,13 @@ output:
     # a different Gleam project, where it cannot be derived from their own dir.
     # types_module: shared/generated
 
+    # Opt-in type shapes (both off by default; they change generated types).
+    # An inline `enum` on a property gets a named enum type instead of String.
+    # inline_enums: true
+    # A property that is optional and nullable becomes Option(T) instead of
+    # Option(Option(T)). Absent and null then both decode to None.
+    # single_option: true
+
   # Plain TypeScript types and fetch-based API client
   # Generates:
   #   - types.generated.ts   — Interfaces/types for all schemas + enums
