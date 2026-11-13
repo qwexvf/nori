@@ -578,8 +578,12 @@ fn record_fields(result: ir.CodegenIR, name: String) -> List(ir.Field) {
   fields
 }
 
+/// Sorted by name: properties come out of a dict, whose order differs between
+/// the Erlang and JavaScript targets.
 fn field_summary(fields: List(ir.Field)) -> List(#(String, Bool)) {
-  list.map(fields, fn(f) { #(f.name, f.required) })
+  fields
+  |> list.map(fn(f) { #(f.name, f.required) })
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
 }
 
 /// #48: a `$ref` member of allOf contributes its properties and its required
@@ -624,10 +628,10 @@ components:
   detail
   |> field_summary
   |> should.equal([
-    #("id", True),
-    #("title", True),
     #("body", True),
+    #("id", True),
     #("note", False),
+    #("title", True),
   ])
   let assert Ok(note) = list.find(detail, fn(f) { f.name == "note" })
   note.type_ref |> should.equal(ir.Primitive(ir.PInt))
