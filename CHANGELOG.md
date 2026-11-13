@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `generate` runs `gleam format` over the Gleam files it writes, using the
+  `gleam` on PATH, so the output passes `gleam format --check` (#36). It never
+  fails the run: without `gleam` on PATH it prints a note, and a formatter
+  error is printed as a warning. `--no-format` skips it.
+
 ## v2.0.0 - 2026-08-25
 
 ### Breaking

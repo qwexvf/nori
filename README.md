@@ -34,6 +34,7 @@ gleam run -m nori/cli -- generate                        # generate from config
 gleam run -m nori/cli -- generate --spec=./api.yaml      # override spec
 gleam run -m nori/cli -- generate --allow-unsupported    # skip capability gate
 gleam run -m nori/cli -- generate --dry-run              # list files, write nothing
+gleam run -m nori/cli -- generate --no-format            # skip `gleam format` on the output
 gleam run -m nori/cli -- generate --quiet                # errors only (--verbose for per-file)
 cat api.yaml | gleam run -m nori/cli -- generate --spec=-  # read spec from stdin
 gleam run -m nori/cli -- bundle spec.yaml                # bundle multi-file spec
@@ -41,7 +42,7 @@ gleam run -m nori/cli -- validate spec.yaml              # structural + capabili
 gleam run -m nori/cli -- validate spec.yaml --format=json  # machine-readable diagnostics
 ```
 
-Every command exits non-zero on error, so they work in CI. `--spec=-` (and `validate -`) read the spec from stdin.
+Every command exits non-zero on error, so they work in CI. `generate` runs the `gleam format` found on PATH over the Gleam files it writes, so the output passes `gleam format --check` with the same compiler your CI uses; without `gleam` on PATH it prints a note and leaves them unformatted. `--spec=-` (and `validate -`) read the spec from stdin.
 
 `generate` aborts by default when the spec uses features nori can't generate correctly (`discriminator` polymorphism, callbacks, `multipart/form-data`, `deepObject` params, etc.). Pass `--allow-unsupported` to generate anyway, with degraded output.
 

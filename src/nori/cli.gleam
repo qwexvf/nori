@@ -43,6 +43,15 @@ fn halt(code: Int) -> a
 @external(javascript, "./cli_ffi.mjs", "read_stdin")
 fn read_stdin() -> String
 
+/// Run a program from PATH without a shell: `Ok(#(exit_status, output))`, or
+/// `Error(Nil)` when it is not on PATH.
+@external(erlang, "cli_ffi", "run_executable")
+@external(javascript, "./cli_ffi.mjs", "run_executable")
+fn run_executable(
+  name: String,
+  args: List(String),
+) -> Result(#(Int, String), Nil)
+
 fn fail(message: String) -> a {
   io.println_error(message)
   halt(1)
@@ -146,6 +155,13 @@ fn generate_command() -> glint.Command(Nil) {
       "Plan the output and list the files without writing them",
     ),
   )
+  use no_format <- glint.flag(
+    glint.bool_flag("no-format")
+    |> glint.flag_default(False)
+    |> glint.flag_help(
+      "Do not run `gleam format` over the generated Gleam files",
+    ),
+  )
   use quiet <- glint.flag(
     glint.bool_flag("quiet")
     |> glint.flag_default(False)
@@ -164,6 +180,7 @@ fn generate_command() -> glint.Command(Nil) {
   let spec_override = result.unwrap(spec_arg(flags), "")
   let allow_unsupported_val = result.unwrap(allow_unsupported(flags), False)
   let dry_run_val = result.unwrap(dry_run(flags), False)
+  let format_val = !result.unwrap(no_format(flags), False)
   let v =
     verbosity(
       result.unwrap(quiet(flags), False),
@@ -288,13 +305,18 @@ fn generate_command() -> glint.Command(Nil) {
             }
             _, False -> {
               case write_generated_files(files, v) {
-                Ok(_) ->
+                Ok(_) -> {
                   info(
                     v,
                     "Generated "
                       <> int.to_string(list.length(files))
                       <> " file(s)",
                   )
+                  case format_val {
+                    True -> format_gleam_files(files, v)
+                    False -> Nil
+                  }
+                }
                 Error(failed) ->
                   fail(
                     "Error: failed to write "
@@ -308,6 +330,42 @@ fn generate_command() -> glint.Command(Nil) {
         }
       }
     }
+  }
+}
+
+/// Runs `gleam format` over the Gleam files just written (#36).
+///
+/// Templates cannot match the formatter's line breaking without reimplementing
+/// it, and the `gleam` on PATH is the one the consumer's CI checks with, so its
+/// output is the target. Nothing here fails the run: the files are already
+/// written and correct, only their layout is at stake.
+fn format_gleam_files(files: List(plugin.GeneratedFile), v: Verbosity) -> Nil {
+  let paths =
+    files
+    |> list.map(fn(f) { f.path })
+    |> list.filter(fn(path) { string.ends_with(path, ".gleam") })
+  case paths {
+    [] -> Nil
+    _ ->
+      case run_executable("gleam", ["format", ..paths]) {
+        Ok(#(0, _)) ->
+          detail(
+            v,
+            "Formatted "
+              <> int.to_string(list.length(paths))
+              <> " Gleam file(s)",
+          )
+        Ok(#(_, output)) ->
+          io.println_error(
+            "Warning: `gleam format` failed on the generated files; they are written but unformatted:\n"
+            <> output,
+          )
+        Error(_) ->
+          info(
+            v,
+            "Note: `gleam` is not on PATH, so the generated Gleam is unformatted.",
+          )
+      }
   }
 }
 
