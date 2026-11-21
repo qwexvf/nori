@@ -530,7 +530,13 @@ fn generate_union_decoder(
 ) -> String {
   case members, discriminator {
     [first, ..rest], None -> untagged_union_decoder(name, first, rest)
-    [_, ..], Some(d) -> tagged_union_decoder(name, members, d)
+    // A discriminator whose members are all inline schemas maps no tag to any
+    // member (the capability check reports it). Trying each member still
+    // decodes, and the union's type needs a decoder either way: other types
+    // call it.
+    [first, ..rest], Some(d) ->
+      tagged_union_decoder(name, members, d)
+      |> result.lazy_unwrap(fn() { untagged_union_decoder(name, first, rest) })
     [], _ -> ""
   }
 }
@@ -575,7 +581,7 @@ fn tagged_union_decoder(
   name: String,
   members: List(#(TypeRef, String)),
   d: ir.Discriminator,
-) -> String {
+) -> Result(String, Nil) {
   let arms =
     list.filter_map(members, fn(member) {
       let tags =
@@ -591,7 +597,7 @@ fn tagged_union_decoder(
       }
     })
   case list.reverse(arms) {
-    [] -> ""
+    [] -> Error(Nil)
     [#(_, last), ..earlier_reversed] -> {
       let all_tags = list.flat_map(arms, fn(arm) { arm.0 })
       let dispatch =
@@ -604,21 +610,23 @@ fn tagged_union_decoder(
           <> "\n"
         })
         |> string.concat
-      "pub fn "
-      <> to_snake_case(name)
-      <> "_decoder() -> Decoder("
-      <> name
-      <> ") {\n  use tag <- decode.field(\n    "
-      <> naming.string_literal(d.property)
-      <> ",\n    decode.string\n      |> decode.then(fn(tag) {\n        case tag {\n          "
-      <> string.join(all_tags, " | ")
-      <> " -> decode.success(tag)\n          _ -> decode.failure(tag, "
-      <> naming.string_literal(name <> "." <> d.property)
-      <> ")\n        }\n      }),\n  )\n  case tag {\n"
-      <> dispatch
-      <> "    _ -> "
-      <> member_decoder(last)
-      <> "\n  }\n}"
+      Ok(
+        "pub fn "
+        <> to_snake_case(name)
+        <> "_decoder() -> Decoder("
+        <> name
+        <> ") {\n  use tag <- decode.field(\n    "
+        <> naming.string_literal(d.property)
+        <> ",\n    decode.string\n      |> decode.then(fn(tag) {\n        case tag {\n          "
+        <> string.join(all_tags, " | ")
+        <> " -> decode.success(tag)\n          _ -> decode.failure(tag, "
+        <> naming.string_literal(name <> "." <> d.property)
+        <> ")\n        }\n      }),\n  )\n  case tag {\n"
+        <> dispatch
+        <> "    _ -> "
+        <> member_decoder(last)
+        <> "\n  }\n}",
+      )
     }
   }
 }

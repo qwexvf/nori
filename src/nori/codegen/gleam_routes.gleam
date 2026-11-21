@@ -173,7 +173,7 @@ fn generate_header(
   // parsers, and a missing import there is a broken generated module.
   // Query length checks and path segments like `{Sid}.json` both use it.
   let string_import = case
-    query.uses_string || list.any(ir.endpoints, has_mixed_segment)
+    query.uses_string || list.any(ir.endpoints, splits_a_segment)
   {
     True -> "\nimport gleam/string"
     False -> ""
@@ -362,14 +362,23 @@ fn first_per_shape(arms: List(Arm)) -> List(Arm) {
   |> fn(state) { list.reverse(state.0) }
 }
 
-/// Whether matching `ep`'s path splits a segment in the arm's body.
-fn has_mixed_segment(ep: Endpoint) -> Bool {
+/// Whether matching `ep`'s path calls `string.split_once`: only a parameter
+/// followed by text does, since leading text is a `"text" <> rest` pattern.
+fn splits_a_segment(ep: Endpoint) -> Bool {
   list.any(path_segments(ep.path), fn(segment) {
     case segment {
-      Mixed(_) -> True
+      Mixed(parts) -> param_before_text(parts)
       _ -> False
     }
   })
+}
+
+fn param_before_text(parts: List(Part)) -> Bool {
+  case parts {
+    [Param(_), Text(_), ..] -> True
+    [_, ..rest] -> param_before_text(rest)
+    [] -> False
+  }
 }
 
 /// One `/`-separated piece of a path template.

@@ -285,18 +285,33 @@ fn build_all_of_type(
     |> list.map(fn(f) {
       ir.Field(..f, required: f.required || list.contains(required, f.name))
     })
-  // `allOf: [$ref: X]` with no properties of its own is X under another name.
-  // When X is a string or a union it brings no fields, and a record without
-  // fields does not parse.
-  case fields, s.all_of {
-    [], [single] ->
+  // An `allOf` that brings no fields is one value under several constraints:
+  // `[$ref: X]` is X under another name, and Cloudflare's
+  // `[{type: string}, $ref: timestamp]` is the timestamp. A record without
+  // fields does not parse, so it becomes an alias of the referenced member, or
+  // of the first one when none is a reference.
+  case fields {
+    [] ->
       ir.AliasType(
         name: name,
-        target: ref_schema_to_typeref(single),
+        target: all_of_target(s.all_of),
         description: s.description,
       )
-    _, _ ->
-      ir.RecordType(name: name, fields: fields, description: s.description)
+    _ -> ir.RecordType(name: name, fields: fields, description: s.description)
+  }
+}
+
+fn all_of_target(members: List(reference.Ref(Schema))) -> ir.TypeRef {
+  let referenced =
+    list.find(members, fn(member) {
+      case member {
+        reference.Reference(_) -> True
+        reference.Inline(_) -> False
+      }
+    })
+  case referenced, members {
+    Ok(member), _ | Error(_), [member, ..] -> ref_schema_to_typeref(member)
+    Error(_), [] -> ir.Unknown
   }
 }
 
@@ -407,9 +422,26 @@ fn dedupe_last_wins(fields: List(ir.Field)) -> List(ir.Field) {
 /// "#/components/schemas/Card" → "Card", the key in `components.schemas`.
 fn ref_component_name(ref_str: String) -> String {
   case string.split(ref_str, "/") {
-    [_, _, _, name] -> name
+    [_, _, _, name] -> unescape_pointer(name)
     _ -> ref_str
   }
+}
+
+/// A `$ref` to component schema `name`. A hoisted name can contain `/`
+/// (Cloudflare has a property called `application/json`), which a JSON
+/// pointer has to escape or the reference points somewhere else.
+fn schema_ref(name: String) -> String {
+  let escaped =
+    name
+    |> string.replace("~", "~0")
+    |> string.replace("/", "~1")
+  "#/components/schemas/" <> escaped
+}
+
+fn unescape_pointer(segment: String) -> String {
+  segment
+  |> string.replace("~1", "/")
+  |> string.replace("~0", "~")
 }
 
 fn build_union_type(
@@ -609,7 +641,7 @@ fn hoist_ref(
             True -> {
               let name = unused_name(base_name, acc, 1)
               #(
-                reference.Reference("#/components/schemas/" <> name),
+                reference.Reference(schema_ref(name)),
                 pool_insert(acc, name, sub),
               )
             }
@@ -631,7 +663,7 @@ fn hoist_ref(
           let acc = pool_insert(acc, name, object)
           let #(hoisted, acc) = hoist_schema(name, object, acc, inline_enums)
           let acc = pool_insert(acc, name, hoisted)
-          let named = reference.Reference("#/components/schemas/" <> name)
+          let named = reference.Reference(schema_ref(name))
           case inline_object_kind(sub) {
             NullableObject -> #(
               reference.Inline(
@@ -995,10 +1027,7 @@ fn ref_schema_to_typeref(ref_schema: reference.Ref(Schema)) -> ir.TypeRef {
 fn ref_to_typeref(ref_str: String) -> ir.TypeRef {
   // Extract name from "#/components/schemas/Name". The name has to go through
   // the same sanitising as the definition or the reference will not resolve.
-  case string.split(ref_str, "/") {
-    [_, _, _, name] -> ir.Named(naming.to_type_name(name))
-    _ -> ir.Named(naming.to_type_name(ref_str))
-  }
+  ir.Named(naming.to_type_name(ref_component_name(ref_str)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1041,7 +1070,35 @@ fn build_endpoints(doc: Document) -> List(ir.Endpoint) {
             build_endpoints_from_path_item(path, path_item, refs)
         }
       })
+      |> unique_operation_ids
     }
+  }
+}
+
+/// operationIds must be unique, but Cloudflare's spec has two `deleteWebhook`.
+/// Each becomes a function and a constructor name, so a repeat (compared as
+/// the snake_case name it generates) gets a number: `deleteWebhook_2`.
+fn unique_operation_ids(endpoints: List(ir.Endpoint)) -> List(ir.Endpoint) {
+  endpoints
+  |> list.fold(#([], set.new()), fn(state, ep) {
+    let #(kept, taken) = state
+    let id = free_operation_id(ep.operation_id, taken, 1)
+    #(
+      [ir.Endpoint(..ep, operation_id: id), ..kept],
+      set.insert(taken, naming.to_snake_case(id)),
+    )
+  })
+  |> fn(state) { list.reverse(state.0) }
+}
+
+fn free_operation_id(id: String, taken: set.Set(String), n: Int) -> String {
+  let candidate = case n {
+    1 -> id
+    _ -> id <> "_" <> int.to_string(n)
+  }
+  case set.contains(taken, naming.to_snake_case(candidate)) {
+    True -> free_operation_id(id, taken, n + 1)
+    False -> candidate
   }
 }
 
@@ -1130,13 +1187,21 @@ fn build_params(
   op_level: List(reference.Ref(Parameter)),
   param_components: dict.Dict(String, reference.Ref(Parameter)),
 ) -> List(ir.EndpointParam) {
-  let all_params = list.append(path_level, op_level)
-  list.filter_map(all_params, fn(ref_param) {
+  let resolve = list.filter_map(_, fn(ref_param) {
     case resolve_component_ref(ref_param, param_components, "parameters") {
       Ok(param) -> Ok(build_param(param))
       Error(_) -> Error(Nil)
     }
   })
+  let op_params = resolve(op_level)
+  // An operation's parameter overrides a path-level one with the same name and
+  // location; listing both gave a route two fields with one label.
+  let overridden =
+    list.map(op_params, fn(p: ir.EndpointParam) { #(p.name, p.location) })
+    |> set.from_list
+  resolve(path_level)
+  |> list.filter(fn(p) { !set.contains(overridden, #(p.name, p.location)) })
+  |> list.append(op_params)
 }
 
 /// Max ref-to-ref hops before giving up, so a cycle cannot hang codegen.

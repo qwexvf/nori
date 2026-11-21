@@ -49,8 +49,9 @@
 
 ### Fixed
 
-Found by generating from the Kubernetes, Stripe, GitHub, Twilio, Box, Jira,
-Discord, Spotify and Swagger Petstore v3 specs and compiling the output.
+Found by generating from the Kubernetes, Stripe, GitHub, Cloudflare, Twilio,
+Box, Jira, Discord, Spotify and Swagger Petstore v3 specs and compiling the
+output (`examples/public_specs/check.sh`).
 
 - Unions of scalars (`oneOf: [string, number]`, Kubernetes' Quantity and
   IntOrString) get a decoder and an encoder, and type aliases (`Time`, a
@@ -78,6 +79,19 @@ Discord, Spotify and Swagger Petstore v3 specs and compiling the output.
   a hyphenated operationId gives a valid constructor; a route that repeats an
   earlier pattern is dropped instead of being an unreachable arm.
 - Middleware: a public route with path parameters is matched as `Route(..)`.
+  The cookie API-key extractor reads the cookie and the HTTP Basic extractor
+  decodes the credentials; both returned `Error(Nil)` for every request.
+- A parameter declared on both the path item and the operation is taken once,
+  from the operation, as OpenAPI says; a route had two fields with one label.
+  A repeated operationId (Cloudflare has two `deleteWebhook`) gets a number.
+- `allOf` that adds no fields (`[{type: string}, $ref: timestamp]`) is an
+  alias of its referenced member. A discriminated union whose members are
+  inline still gets a decoder, trying each member. An inline object under a
+  property named like `application/json` gets a `$ref` that resolves.
+- A client body that is a list of untyped values is sent as the caller's
+  `Json` instead of being encoded as a list. `minItems: 1` and `maxItems: 0`
+  checks compare with `[]` instead of `list.length`, which the compiler warns
+  about.
 - A record with more than 64 fields is decoded in parts. The Gleam compiler
   (1.18) crashes on a chain of about 200 `use` lines, which Twilio's
   `CreateSiprecRequest` produced.

@@ -409,8 +409,12 @@ fn generate_request_fn(
   // Build request body
   let body_section = case endpoint.request_body {
     Some(body) -> {
-      let encoder =
-        type_ref_encoder_call(locals.body, body.type_ref, name_prefix)
+      // The argument's type follows body_encodable (see body_arg_type); a
+      // caller-built Json goes out as it is.
+      let encoder = case body_encodable(body.type_ref) {
+        True -> type_ref_encoder_call(locals.body, body.type_ref, name_prefix)
+        False -> locals.body
+      }
       "\n  |> request.set_body(json.to_string(" <> encoder <> "))"
     }
     None -> ""

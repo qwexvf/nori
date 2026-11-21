@@ -1642,6 +1642,15 @@ paths:
           content:
             application/octet-stream:
               schema: {type: string, format: binary}
+  /bulk:
+    post:
+      operationId: bulk
+      requestBody:
+        content:
+          application/json:
+            schema: {type: array, items: {}}
+      responses:
+        '200': {description: OK}
 components:
   schemas:
     Fields:
@@ -1652,6 +1661,34 @@ components:
       type: object
       properties:
         b: {type: string}
+    timestamp:
+      type: string
+      format: date-time
+    created_at:
+      allOf:
+        - type: string
+        - $ref: '#/components/schemas/timestamp'
+    content:
+      type: object
+      properties:
+        application/json:
+          type: object
+          properties:
+            ok: {type: boolean}
+    format:
+      discriminator: {propertyName: type}
+      oneOf:
+        - type: object
+          properties:
+            type: {type: string}
+        - type: object
+          properties:
+            type: {type: string}
+            compression: {type: string}
+    sink:
+      type: object
+      properties:
+        format: {$ref: '#/components/schemas/format'}
 "
   let assert Ok(doc) = yaml.parse_yaml(yaml_str)
   let codegen_ir = ir_builder.build(doc)
@@ -1742,4 +1779,61 @@ pub fn main() {
   assert_line("events/start.42=GetEvent(\"start\", \"42\")")
   assert_line("users/me=GetMe")
   assert_line("users/u1=GetUser(\"u1\")")
+}
+
+/// The cookie API key and HTTP Basic extractors used to return `Error(Nil)`
+/// whatever the request carried.
+pub fn auth_extractors_behave_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Auth
+  version: '1.0.0'
+paths:
+  /me:
+    get:
+      operationId: getMe
+      responses:
+        '200': {description: OK}
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: session_id
+    basic:
+      type: http
+      scheme: basic
+security:
+  - session: []
+"
+  let main_source =
+    "import generated/middleware
+import gleam/http/request
+import gleam/io
+import gleam/string
+
+pub fn main() {
+  let with = fn(name, value) { request.new() |> request.set_header(name, value) }
+  io.println(\"cookie=\" <> string.inspect(middleware.extract_session(with(\"cookie\", \"theme=dark; session_id=abc123\"))))
+  io.println(\"no_cookie=\" <> string.inspect(middleware.extract_session(with(\"cookie\", \"theme=dark\"))))
+  // \"alice:s3cret\" in base64
+  io.println(\"basic=\" <> string.inspect(middleware.extract_basic(with(\"authorization\", \"Basic YWxpY2U6czNjcmV0\"))))
+  io.println(\"bad_basic=\" <> string.inspect(middleware.extract_basic(with(\"authorization\", \"Basic !!!\"))))
+  io.println(\"bearer=\" <> string.inspect(middleware.extract_basic(with(\"authorization\", \"Bearer x\"))))
+}
+"
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+  assert_line("cookie=Ok(\"abc123\")")
+  assert_line("no_cookie=Error(Nil)")
+  assert_line("basic=Ok(#(\"alice\", \"s3cret\"))")
+  assert_line("bad_basic=Error(Nil)")
+  assert_line("bearer=Error(Nil)")
 }
