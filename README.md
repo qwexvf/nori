@@ -252,9 +252,14 @@ Tracked roadmap:
 
 ## Examples
 
-- `examples/petstore/`: generated output for the Petstore spec
-- `examples/realworld/`: a blog API (users, posts, comments, enums, `allOf`)
-- `examples/wisp_app/`: a working Todo API server on Wisp
+- `examples/petstore/`: generated output for `test/fixtures/petstore.yaml`
+- `examples/realworld/`: generated output for `test/fixtures/realworld.yaml`, a
+  blog API (users, posts, comments, enums, `allOf`)
+- `examples/wisp_app/`: a Todo API server on Wisp, with tests that go through
+  the generated routes, decoders and encoders
+
+`examples/regenerate.sh` rewrites all three with the current generator; CI
+fails when the committed output is stale.
 - `examples/public_specs/`: generates and compiles Kubernetes, Stripe, GitHub,
   Twilio and other public specs (`examples/public_specs/check.sh`)
 

@@ -2,20 +2,20 @@
 ////
 //// Auth extractors, route guards, and composable middleware.
 
+import gleam/http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/json
+import gleam/list
+import gleam/routes
 import gleam/string
-import gleam/string_tree
-// TODO: Import your generated routes module
-// import your_app/generated/routes.{type Route}
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /// A middleware function that wraps a handler.
-pub type Middleware =
+pub type Middleware(a, b) =
   fn(Request(a), fn(Request(a)) -> Response(b)) -> Response(b)
 
 /// Extracted auth information from a request.
@@ -34,12 +34,11 @@ pub type AuthContext {
 /// Check if a route requires authentication.
 /// Returns True if the route is public (no auth needed).
 /// Generated from endpoint security overrides and global security settings.
-// NOTE: Uncomment and adjust once your Route type is imported.
-// pub fn is_public_route(route: Route) -> Bool {
-//   case route {
-//       _ -> True
-//   }
-// }
+pub fn is_public_route(route: routes.Route) -> Bool {
+  case route {
+    _ -> True
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Composable middleware builders
@@ -55,8 +54,8 @@ pub type AuthContext {
 /// Use for POST/PUT/PATCH routes that expect a JSON body.
 pub fn require_json_content_type(
   req: Request(a),
-  next: fn() -> Response(b),
-) -> Response(b) {
+  next: fn() -> Response(String),
+) -> Response(String) {
   case request.get_header(req, "content-type") {
     Ok(ct) -> {
       case string.contains(ct, "application/json") {
@@ -65,8 +64,7 @@ pub fn require_json_content_type(
           json_error_response("Content-Type must be application/json", 415)
       }
     }
-    Error(_) ->
-      json_error_response("Content-Type header required", 415)
+    Error(_) -> json_error_response("Content-Type header required", 415)
   }
 }
 
@@ -79,14 +77,16 @@ pub fn require_json_content_type(
 pub fn cors(
   allowed_origins: List(String),
   req: Request(a),
-  next: fn(Request(a)) -> Response(b),
-) -> Response(b) {
+  next: fn(Request(a)) -> Response(String),
+) -> Response(String) {
   let origin = case request.get_header(req, "origin") {
     Ok(o) -> o
     Error(_) -> ""
   }
   let is_allowed =
-    list.any(allowed_origins, fn(allowed) { allowed == "*" || allowed == origin })
+    list.any(allowed_origins, fn(allowed) {
+      allowed == "*" || allowed == origin
+    })
   case is_allowed {
     False -> next(req)
     True -> {
@@ -119,11 +119,11 @@ pub fn cors(
 // ---------------------------------------------------------------------------
 
 /// Return a JSON error response with the given message and status code.
-pub fn json_error_response(message: String, status: Int) -> Response(b) {
+pub fn json_error_response(message: String, status: Int) -> Response(String) {
   let body =
     json.object([#("error", json.string(message))])
     |> json.to_string
   response.new(status)
   |> response.set_header("content-type", "application/json")
-  |> response.set_body(string_tree.from_string(body))
+  |> response.set_body(body)
 }

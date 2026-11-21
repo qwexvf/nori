@@ -1,30 +1,19 @@
 //// Generated from Todo API v1.0.0
 
-import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
 import gleam/option.{type Option, None, Some}
 
 pub type CreateTodoRequest {
-  CreateTodoRequest(
-    description: Option(String),
-    title: String,
-  )
+  CreateTodoRequest(description: Option(String), title: String)
 }
 
 pub type Error {
-  Error(
-    message: String,
-  )
+  Error(message: String)
 }
 
 pub type Todo {
-  Todo(
-    completed: Bool,
-    description: Option(String),
-    id: String,
-    title: String,
-  )
+  Todo(completed: Bool, description: Option(String), id: String, title: String)
 }
 
 pub type UpdateTodoRequest {
@@ -36,29 +25,49 @@ pub type UpdateTodoRequest {
 }
 
 pub fn create_todo_request_decoder() -> Decoder(CreateTodoRequest) {
-  use description <- decode.optional_field("description", None, decode.optional(decode.string))
+  use description <- decode.optional_field(
+    "description",
+    None,
+    decode.optional(decode.string),
+  )
   use title <- decode.field("title", decode.string)
-  decode.success(CreateTodoRequest(description: description, title: title))
+  decode.success(CreateTodoRequest(description:, title:))
 }
 
 pub fn error_decoder() -> Decoder(Error) {
   use message <- decode.field("message", decode.string)
-  decode.success(Error(message: message))
+  decode.success(Error(message:))
 }
 
 pub fn todo_decoder() -> Decoder(Todo) {
   use completed <- decode.field("completed", decode.bool)
-  use description <- decode.optional_field("description", None, decode.optional(decode.string))
+  use description <- decode.optional_field(
+    "description",
+    None,
+    decode.optional(decode.string),
+  )
   use id <- decode.field("id", decode.string)
   use title <- decode.field("title", decode.string)
-  decode.success(Todo(completed: completed, description: description, id: id, title: title))
+  decode.success(Todo(completed:, description:, id:, title:))
 }
 
 pub fn update_todo_request_decoder() -> Decoder(UpdateTodoRequest) {
-  use completed <- decode.optional_field("completed", None, decode.optional(decode.bool))
-  use description <- decode.optional_field("description", None, decode.optional(decode.string))
-  use title <- decode.optional_field("title", None, decode.optional(decode.string))
-  decode.success(UpdateTodoRequest(completed: completed, description: description, title: title))
+  use completed <- decode.optional_field(
+    "completed",
+    None,
+    decode.optional(decode.bool),
+  )
+  use description <- decode.optional_field(
+    "description",
+    None,
+    decode.optional(decode.string),
+  )
+  use title <- decode.optional_field(
+    "title",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(UpdateTodoRequest(completed:, description:, title:))
 }
 
 pub fn encode_create_todo_request(value: CreateTodoRequest) -> Json {

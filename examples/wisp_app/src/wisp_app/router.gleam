@@ -2,10 +2,10 @@
 ////
 //// This is the glue between the generated code and your business logic.
 
-import gleam/json
-import gleam/option.{None, Some}
 import generated/routes
 import generated/types
+import gleam/json
+import gleam/option.{None, Some}
 import wisp.{type Request, type Response}
 import wisp_app/store
 

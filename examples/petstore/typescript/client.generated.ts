@@ -5,12 +5,14 @@ import type { CreatePetRequest, Error, Pet } from "./types.generated";
 export interface ClientConfig {
   baseUrl: string;
   headers?: Record<string, string>;
+  /** Override fetch credentials mode (defaults to 'include' when the spec uses cookie auth). */
+  credentials?: RequestCredentials;
 }
 
-let _config: ClientConfig = { baseUrl: "" };
+let _config: ClientConfig = { baseUrl: "", credentials: undefined };
 
 export function configure(config: ClientConfig): void {
-  _config = config;
+  _config = { credentials: undefined, ...config };
 }
 
 function getHeaders(): Record<string, string> {
@@ -26,11 +28,17 @@ export async function createPet(body: CreatePetRequest): Promise<void> {
   const response = await fetch(url, {
     method: "POST",
     headers: getHeaders(),
+    credentials: _config.credentials,
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return;
@@ -38,16 +46,23 @@ export async function createPet(body: CreatePetRequest): Promise<void> {
 
 /** List all pets */
 export async function listPets(params: { limit?: number }): Promise<Array<Pet>> {
-  const _url = new URL(`${_config.baseUrl}/pets`);
-  if (params.limit !== undefined) _url.searchParams.set("limit", String(params.limit));
-  const url = _url.toString();
+  const _query = new URLSearchParams();
+  if (params.limit !== undefined) _query.set("limit", String(params.limit));
+  const _qs = _query.toString();
+  const url = `${_config.baseUrl}/pets${_qs ? `?${_qs}` : ""}`;
   const response = await fetch(url, {
     method: "GET",
     headers: getHeaders(),
+    credentials: _config.credentials,
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return await response.json() as Array<Pet>;
@@ -59,10 +74,16 @@ export async function showPetById(petId: string): Promise<Pet> {
   const response = await fetch(url, {
     method: "GET",
     headers: getHeaders(),
+    credentials: _config.credentials,
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return await response.json() as Pet;

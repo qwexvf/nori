@@ -21,7 +21,9 @@ pub fn main() -> Nil {
   io.println("")
   io.println("Try:")
   io.println("  curl http://localhost:8080/todos")
-  io.println("  curl -X POST -H 'Content-Type: application/json' -d '{\"title\": \"Buy milk\"}' http://localhost:8080/todos")
+  io.println(
+    "  curl -X POST -H 'Content-Type: application/json' -d '{\"title\": \"Buy milk\"}' http://localhost:8080/todos",
+  )
 
   process.sleep_forever()
 }

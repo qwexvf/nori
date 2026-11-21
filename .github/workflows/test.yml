@@ -21,3 +21,13 @@ jobs:
       - run: gleam check
       - run: gleam test
       - run: gleam format --check src test
+      - name: Examples match the generator
+        run: |
+          examples/regenerate.sh
+          git status --porcelain -- examples
+          test -z "$(git status --porcelain -- examples)"
+      - name: wisp_app example
+        working-directory: examples/wisp_app
+        run: |
+          gleam test
+          gleam format --check src test

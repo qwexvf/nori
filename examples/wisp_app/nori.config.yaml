@@ -1,0 +1,5 @@
+spec: ./openapi.yaml
+
+output:
+  gleam:
+    dir: ./src/generated

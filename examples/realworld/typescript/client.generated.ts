@@ -5,12 +5,14 @@ import type { Comment, CreateCommentRequest, CreatePostRequest, CreateUserReques
 export interface ClientConfig {
   baseUrl: string;
   headers?: Record<string, string>;
+  /** Override fetch credentials mode (defaults to 'include' when the spec uses cookie auth). */
+  credentials?: RequestCredentials;
 }
 
-let _config: ClientConfig = { baseUrl: "" };
+let _config: ClientConfig = { baseUrl: "", credentials: undefined };
 
 export function configure(config: ClientConfig): void {
-  _config = config;
+  _config = { credentials: undefined, ...config };
 }
 
 function getHeaders(): Record<string, string> {
@@ -26,11 +28,17 @@ export async function createPost(body: CreatePostRequest): Promise<Post> {
   const response = await fetch(url, {
     method: "POST",
     headers: getHeaders(),
+    credentials: _config.credentials,
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return await response.json() as Post;
@@ -38,19 +46,26 @@ export async function createPost(body: CreatePostRequest): Promise<Post> {
 
 /** List all posts */
 export async function listPosts(params: { page?: number; per_page?: number; sort?: string; status?: PostStatus }): Promise<Array<Post>> {
-  const _url = new URL(`${_config.baseUrl}/posts`);
-  if (params.page !== undefined) _url.searchParams.set("page", String(params.page));
-  if (params.per_page !== undefined) _url.searchParams.set("per_page", String(params.per_page));
-  if (params.sort !== undefined) _url.searchParams.set("sort", String(params.sort));
-  if (params.status !== undefined) _url.searchParams.set("status", String(params.status));
-  const url = _url.toString();
+  const _query = new URLSearchParams();
+  if (params.page !== undefined) _query.set("page", String(params.page));
+  if (params.per_page !== undefined) _query.set("per_page", String(params.per_page));
+  if (params.sort !== undefined) _query.set("sort", String(params.sort));
+  if (params.status !== undefined) _query.set("status", String(params.status));
+  const _qs = _query.toString();
+  const url = `${_config.baseUrl}/posts${_qs ? `?${_qs}` : ""}`;
   const response = await fetch(url, {
     method: "GET",
     headers: getHeaders(),
+    credentials: _config.credentials,
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return await response.json() as Array<Post>;
@@ -62,10 +77,16 @@ export async function deletePost(postId: string): Promise<void> {
   const response = await fetch(url, {
     method: "DELETE",
     headers: getHeaders(),
+    credentials: _config.credentials,
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return;
@@ -77,11 +98,17 @@ export async function updatePost(postId: string, body: CreatePostRequest): Promi
   const response = await fetch(url, {
     method: "PUT",
     headers: getHeaders(),
+    credentials: _config.credentials,
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return await response.json() as Post;
@@ -93,10 +120,16 @@ export async function getPost(postId: string): Promise<Post> {
   const response = await fetch(url, {
     method: "GET",
     headers: getHeaders(),
+    credentials: _config.credentials,
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return await response.json() as Post;
@@ -108,11 +141,17 @@ export async function createComment(postId: string, body: CreateCommentRequest):
   const response = await fetch(url, {
     method: "POST",
     headers: getHeaders(),
+    credentials: _config.credentials,
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return await response.json() as Comment;
@@ -120,17 +159,24 @@ export async function createComment(postId: string, body: CreateCommentRequest):
 
 /** List comments on a post */
 export async function listComments(postId: string, params: { page?: number; per_page?: number }): Promise<Array<Comment>> {
-  const _url = new URL(`${_config.baseUrl}/posts/${postId}/comments`);
-  if (params.page !== undefined) _url.searchParams.set("page", String(params.page));
-  if (params.per_page !== undefined) _url.searchParams.set("per_page", String(params.per_page));
-  const url = _url.toString();
+  const _query = new URLSearchParams();
+  if (params.page !== undefined) _query.set("page", String(params.page));
+  if (params.per_page !== undefined) _query.set("per_page", String(params.per_page));
+  const _qs = _query.toString();
+  const url = `${_config.baseUrl}/posts/${postId}/comments${_qs ? `?${_qs}` : ""}`;
   const response = await fetch(url, {
     method: "GET",
     headers: getHeaders(),
+    credentials: _config.credentials,
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return await response.json() as Array<Comment>;
@@ -142,11 +188,17 @@ export async function createUser(body: CreateUserRequest): Promise<User> {
   const response = await fetch(url, {
     method: "POST",
     headers: getHeaders(),
+    credentials: _config.credentials,
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return await response.json() as User;
@@ -154,18 +206,25 @@ export async function createUser(body: CreateUserRequest): Promise<User> {
 
 /** List all users */
 export async function listUsers(params: { page?: number; per_page?: number; sort?: string }): Promise<Array<User>> {
-  const _url = new URL(`${_config.baseUrl}/users`);
-  if (params.page !== undefined) _url.searchParams.set("page", String(params.page));
-  if (params.per_page !== undefined) _url.searchParams.set("per_page", String(params.per_page));
-  if (params.sort !== undefined) _url.searchParams.set("sort", String(params.sort));
-  const url = _url.toString();
+  const _query = new URLSearchParams();
+  if (params.page !== undefined) _query.set("page", String(params.page));
+  if (params.per_page !== undefined) _query.set("per_page", String(params.per_page));
+  if (params.sort !== undefined) _query.set("sort", String(params.sort));
+  const _qs = _query.toString();
+  const url = `${_config.baseUrl}/users${_qs ? `?${_qs}` : ""}`;
   const response = await fetch(url, {
     method: "GET",
     headers: getHeaders(),
+    credentials: _config.credentials,
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return await response.json() as Array<User>;
@@ -177,10 +236,16 @@ export async function deleteUser(userId: string): Promise<void> {
   const response = await fetch(url, {
     method: "DELETE",
     headers: getHeaders(),
+    credentials: _config.credentials,
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return;
@@ -192,11 +257,17 @@ export async function updateUser(userId: string, body: UpdateUserRequest): Promi
   const response = await fetch(url, {
     method: "PUT",
     headers: getHeaders(),
+    credentials: _config.credentials,
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return await response.json() as User;
@@ -208,10 +279,16 @@ export async function getUser(userId: string): Promise<User> {
   const response = await fetch(url, {
     method: "GET",
     headers: getHeaders(),
+    credentials: _config.credentials,
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let detail: string = response.statusText;
+    try {
+      const errBody = await response.clone().json();
+      if (errBody && typeof errBody.error === "string") detail = errBody.error;
+    } catch {}
+    throw new Error(`HTTP ${response.status}: ${detail}`);
   }
 
   return await response.json() as User;

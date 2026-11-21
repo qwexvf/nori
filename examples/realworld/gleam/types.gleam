@@ -1,23 +1,16 @@
 //// Generated from RealWorld Blog API v1.0.0
 
-import gleam/dynamic.{type Dynamic}
+import gleam
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
 import gleam/option.{type Option, None, Some}
 
 pub type Comment {
-  Comment(
-    author: User,
-    body: String,
-    created_at: String,
-    id: String,
-  )
+  Comment(author: User, body: String, created_at: String, id: String)
 }
 
 pub type CreateCommentRequest {
-  CreateCommentRequest(
-    body: String,
-  )
+  CreateCommentRequest(body: String)
 }
 
 pub type CreatePostRequest {
@@ -39,11 +32,7 @@ pub type CreateUserRequest {
 }
 
 pub type Error {
-  Error(
-    code: Int,
-    details: Option(List(String)),
-    message: String,
-  )
+  Error(code: Int, details: Option(List(String)), message: String)
 }
 
 pub type Post {
@@ -60,30 +49,34 @@ pub type Post {
 }
 
 pub type PostStatus {
-  draft
-  published
-  archived
+  PostStatusDraft
+  PostStatusPublished
+  PostStatusArchived
 }
 
 pub fn post_status_from_string(value: String) -> Result(PostStatus, Nil) {
   case value {
-    "draft" -> Ok(draft)
-    "published" -> Ok(published)
-    "archived" -> Ok(archived)
-    _ -> Error(Nil)
+    "draft" -> gleam.Ok(PostStatusDraft)
+    "published" -> gleam.Ok(PostStatusPublished)
+    "archived" -> gleam.Ok(PostStatusArchived)
+    _ -> gleam.Error(Nil)
   }
 }
 
 pub fn post_status_to_string(value: PostStatus) -> String {
   case value {
-    draft -> "draft"
-    published -> "published"
-    archived -> "archived"
+    PostStatusDraft -> "draft"
+    PostStatusPublished -> "published"
+    PostStatusArchived -> "archived"
   }
 }
 
 pub type UpdateUserRequest {
   UpdateUserRequest(
+    bio: Option(String),
+    email: String,
+    password: String,
+    username: String,
     avatar_url: Option(Option(String)),
   )
 }
@@ -105,20 +98,28 @@ pub fn comment_decoder() -> Decoder(Comment) {
   use body <- decode.field("body", decode.string)
   use created_at <- decode.field("created_at", decode.string)
   use id <- decode.field("id", decode.string)
-  decode.success(Comment(author: author, body: body, created_at: created_at, id: id))
+  decode.success(Comment(author:, body:, created_at:, id:))
 }
 
 pub fn create_comment_request_decoder() -> Decoder(CreateCommentRequest) {
   use body <- decode.field("body", decode.string)
-  decode.success(CreateCommentRequest(body: body))
+  decode.success(CreateCommentRequest(body:))
 }
 
 pub fn create_post_request_decoder() -> Decoder(CreatePostRequest) {
   use body <- decode.field("body", decode.string)
-  use status <- decode.optional_field("status", None, decode.optional(post_status_decoder()))
-  use tags <- decode.optional_field("tags", None, decode.optional(decode.list(decode.string)))
+  use status <- decode.optional_field(
+    "status",
+    None,
+    decode.optional(post_status_decoder()),
+  )
+  use tags <- decode.optional_field(
+    "tags",
+    None,
+    decode.optional(decode.list(decode.string)),
+  )
   use title <- decode.field("title", decode.string)
-  decode.success(CreatePostRequest(body: body, status: status, tags: tags, title: title))
+  decode.success(CreatePostRequest(body:, status:, tags:, title:))
 }
 
 pub fn create_user_request_decoder() -> Decoder(CreateUserRequest) {
@@ -126,14 +127,18 @@ pub fn create_user_request_decoder() -> Decoder(CreateUserRequest) {
   use email <- decode.field("email", decode.string)
   use password <- decode.field("password", decode.string)
   use username <- decode.field("username", decode.string)
-  decode.success(CreateUserRequest(bio: bio, email: email, password: password, username: username))
+  decode.success(CreateUserRequest(bio:, email:, password:, username:))
 }
 
 pub fn error_decoder() -> Decoder(Error) {
   use code <- decode.field("code", decode.int)
-  use details <- decode.optional_field("details", None, decode.optional(decode.list(decode.string)))
+  use details <- decode.optional_field(
+    "details",
+    None,
+    decode.optional(decode.list(decode.string)),
+  )
   use message <- decode.field("message", decode.string)
-  decode.success(Error(code: code, details: details, message: message))
+  decode.success(Error(code:, details:, message:))
 }
 
 pub fn post_decoder() -> Decoder(Post) {
@@ -142,34 +147,81 @@ pub fn post_decoder() -> Decoder(Post) {
   use created_at <- decode.field("created_at", decode.string)
   use id <- decode.field("id", decode.string)
   use status <- decode.field("status", post_status_decoder())
-  use tags <- decode.optional_field("tags", None, decode.optional(decode.list(decode.string)))
+  use tags <- decode.optional_field(
+    "tags",
+    None,
+    decode.optional(decode.list(decode.string)),
+  )
   use title <- decode.field("title", decode.string)
-  use updated_at <- decode.optional_field("updated_at", None, decode.optional(decode.string))
-  decode.success(Post(author: author, body: body, created_at: created_at, id: id, status: status, tags: tags, title: title, updated_at: updated_at))
+  use updated_at <- decode.optional_field(
+    "updated_at",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(Post(
+    author:,
+    body:,
+    created_at:,
+    id:,
+    status:,
+    tags:,
+    title:,
+    updated_at:,
+  ))
 }
 
 pub fn post_status_decoder() -> Decoder(PostStatus) {
   use value <- decode.then(decode.string)
   case post_status_from_string(value) {
-    Ok(variant) -> decode.success(variant)
-    Error(_) -> decode.failure(PostStatus, "PostStatus")
+    gleam.Ok(variant) -> decode.success(variant)
+    gleam.Error(_) -> decode.failure(PostStatusDraft, "PostStatus")
   }
 }
 
 pub fn update_user_request_decoder() -> Decoder(UpdateUserRequest) {
-  use avatar_url <- decode.optional_field("avatar_url", None, decode.optional(decode.optional(decode.string)))
-  decode.success(UpdateUserRequest(avatar_url: avatar_url))
+  use bio <- decode.optional_field("bio", None, decode.optional(decode.string))
+  use email <- decode.field("email", decode.string)
+  use password <- decode.field("password", decode.string)
+  use username <- decode.field("username", decode.string)
+  use avatar_url <- decode.optional_field(
+    "avatar_url",
+    None,
+    decode.optional(decode.optional(decode.string)),
+  )
+  decode.success(UpdateUserRequest(
+    bio:,
+    email:,
+    password:,
+    username:,
+    avatar_url:,
+  ))
 }
 
 pub fn user_decoder() -> Decoder(User) {
-  use avatar_url <- decode.optional_field("avatar_url", None, decode.optional(decode.optional(decode.string)))
+  use avatar_url <- decode.optional_field(
+    "avatar_url",
+    None,
+    decode.optional(decode.optional(decode.string)),
+  )
   use bio <- decode.optional_field("bio", None, decode.optional(decode.string))
   use created_at <- decode.field("created_at", decode.string)
   use email <- decode.field("email", decode.string)
   use id <- decode.field("id", decode.string)
-  use updated_at <- decode.optional_field("updated_at", None, decode.optional(decode.string))
+  use updated_at <- decode.optional_field(
+    "updated_at",
+    None,
+    decode.optional(decode.string),
+  )
   use username <- decode.field("username", decode.string)
-  decode.success(User(avatar_url: avatar_url, bio: bio, created_at: created_at, email: email, id: id, updated_at: updated_at, username: username))
+  decode.success(User(
+    avatar_url:,
+    bio:,
+    created_at:,
+    email:,
+    id:,
+    updated_at:,
+    username:,
+  ))
 }
 
 pub fn encode_comment(value: Comment) -> Json {
@@ -250,8 +302,19 @@ pub fn encode_post_status(value: PostStatus) -> Json {
 
 pub fn encode_update_user_request(value: UpdateUserRequest) -> Json {
   json.object([
+    #("bio", case value.bio {
+      Some(v) -> json.string(v)
+      None -> json.null()
+    }),
+    #("email", json.string(value.email)),
+    #("password", json.string(value.password)),
+    #("username", json.string(value.username)),
     #("avatar_url", case value.avatar_url {
-      Some(v) -> case v { Some(v) -> json.string(v) None -> json.null() }
+      Some(v) ->
+        case v {
+          Some(v) -> json.string(v)
+          None -> json.null()
+        }
       None -> json.null()
     }),
   ])
@@ -260,7 +323,11 @@ pub fn encode_update_user_request(value: UpdateUserRequest) -> Json {
 pub fn encode_user(value: User) -> Json {
   json.object([
     #("avatar_url", case value.avatar_url {
-      Some(v) -> case v { Some(v) -> json.string(v) None -> json.null() }
+      Some(v) ->
+        case v {
+          Some(v) -> json.string(v)
+          None -> json.null()
+        }
       None -> json.null()
     }),
     #("bio", case value.bio {
