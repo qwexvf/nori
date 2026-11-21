@@ -437,9 +437,18 @@ fn generate_is_public_route(ir: CodegenIR, module_prefix: String) -> String {
       let public_cases =
         endpoints
         |> list.map(fn(ep) {
+          // A route with path parameters is a constructor with fields, which
+          // a bare name does not match.
+          let fields = case
+            list.any(ep.parameters, fn(p) { p.location == ir.PathParam })
+          {
+            True -> "(..)"
+            False -> ""
+          }
           "    "
           <> variant_prefix
           <> to_pascal_case(ep.operation_id)
+          <> fields
           <> " -> True"
         })
         |> string.join("\n")

@@ -5,6 +5,7 @@
 
 import argv
 import gleam/dict
+import gleam/dynamic/decode
 import gleam/int
 import gleam/io
 import gleam/json
@@ -214,7 +215,7 @@ fn generate_command() -> glint.Command(Nil) {
       let reason = case err {
         yaml.FileError(path, msg) -> "File error (" <> path <> "): " <> msg
         yaml.YamlSyntaxError(msg) -> "YAML syntax error: " <> msg
-        yaml.YamlDecodeError(_) -> "Failed to decode OpenAPI document"
+        yaml.YamlDecodeError(errors) -> describe_decode_errors(errors)
       }
       fail("Error: Failed to parse spec\n  " <> reason)
     }
@@ -1139,7 +1140,7 @@ fn validate_command() -> glint.Command(Nil) {
       let reason = case err {
         yaml.FileError(path, msg) -> "File error (" <> path <> "): " <> msg
         yaml.YamlSyntaxError(msg) -> "YAML syntax error: " <> msg
-        yaml.YamlDecodeError(_) -> "Failed to decode OpenAPI document"
+        yaml.YamlDecodeError(errors) -> describe_decode_errors(errors)
       }
       case json_output {
         True -> {
@@ -1221,4 +1222,29 @@ fn validate_json(
     #("capability_issues", json.array(issues, json.string)),
   ])
   |> json.to_string
+}
+
+/// Says where decoding stopped. Without the path, an unsupported `openapi`
+/// version and a malformed schema deep in `components` read the same.
+fn describe_decode_errors(errors: List(decode.DecodeError)) -> String {
+  let shown =
+    errors
+    |> list.take(5)
+    |> list.map(fn(e) {
+      "\n    expected "
+      <> e.expected
+      <> ", found "
+      <> e.found
+      <> " at "
+      <> case e.path {
+        [] -> "the document root"
+        path -> string.join(path, ".")
+      }
+    })
+    |> string.concat
+  let more = case list.length(errors) - 5 {
+    n if n > 0 -> "\n    (" <> int.to_string(n) <> " more)"
+    _ -> ""
+  }
+  "Failed to decode OpenAPI document:" <> shown <> more
 }

@@ -3,8 +3,11 @@
 //// Produces a Gleam module with a Route union type and a match_route function
 //// that pattern-matches HTTP method + path segments.
 
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/order
+import gleam/set
 import gleam/string
 import nori/codegen/gleam_constraints
 import nori/codegen/ir.{
@@ -25,9 +28,9 @@ pub fn generate(ir: CodegenIR, module_prefix: String) -> String {
   // decided by what the section actually emitted, and generating it twice to
   // answer those questions twice is how the two drift apart.
   let query = build_query_section(ir, module_prefix)
+  let match_fn = generate_match_fn(ir.endpoints)
   let header = generate_header(ir, module_prefix, query)
   let route_type = generate_route_type(ir.endpoints)
-  let match_fn = generate_match_fn(ir.endpoints)
   let handler_types = generate_handler_types(ir.endpoints)
 
   string.join(
@@ -39,7 +42,13 @@ pub fn generate(ir: CodegenIR, module_prefix: String) -> String {
 /// The query-parameter part of the module, plus what the rest of the file needs
 /// to know about it: which `gleam/*` modules it uses and which types it names.
 type QuerySection {
-  QuerySection(code: String, imports: String, enum_types: List(String))
+  QuerySection(
+    code: String,
+    imports: String,
+    enum_types: List(String),
+    /// A string length check counts code points with gleam/string.
+    uses_string: Bool,
+  )
 }
 
 /// Endpoints that declare query parameters, in spec order.
@@ -49,6 +58,12 @@ fn endpoints_with_query(endpoints: List(Endpoint)) -> List(Endpoint) {
 
 pub fn query_params(ep: Endpoint) -> List(ir.EndpointParam) {
   list.filter(ep.parameters, fn(p) { p.location == ir.QueryParam })
+}
+
+/// The query record's labels. Shared with the MCP generator, which builds the
+/// same record.
+pub fn query_field_names(ep: Endpoint) -> naming.ParamNames {
+  naming.param_names(query_params(ep))
 }
 
 // ---------------------------------------------------------------------------
@@ -71,15 +86,10 @@ fn generate_header(
         Some(body) -> collect_named_types(body.type_ref)
         None -> []
       }
-      let response_types =
-        ep.responses
-        |> list.filter(fn(r) { string.starts_with(r.status_code, "2") })
-        |> list.flat_map(fn(r) {
-          case r.type_ref {
-            Some(ref) -> collect_named_types(ref)
-            None -> []
-          }
-        })
+      let response_types = case handler_response_ref(ep) {
+        Some(ref) -> collect_named_types(ref)
+        None -> []
+      }
       list.append(body_types, response_types)
     })
     // Enum-typed query parameters appear in the query records below, so their
@@ -124,13 +134,10 @@ fn generate_header(
   // Handler aliases reference Dynamic when an inline schema collapsed to Unknown.
   let needs_dynamic =
     list.any(ir.endpoints, fn(ep) {
-      let resp_uses =
-        list.any(ep.responses, fn(r) {
-          case r.type_ref {
-            Some(ref) -> ref_uses_unknown(ref)
-            None -> False
-          }
-        })
+      let resp_uses = case handler_response_ref(ep) {
+        Some(ref) -> ref_uses_unknown(ref)
+        None -> False
+      }
       let body_uses = case ep.request_body {
         Some(b) -> ref_uses_unknown(b.type_ref)
         None -> False
@@ -146,13 +153,10 @@ fn generate_header(
   // A map body or success response shows up as Dict in the handler type.
   let needs_dict =
     list.any(ir.endpoints, fn(ep) {
-      let resp_uses =
-        list.any(ep.responses, fn(r) {
-          case string.starts_with(r.status_code, "2"), r.type_ref {
-            True, Some(ref) -> ref_uses_dict(ref)
-            _, _ -> False
-          }
-        })
+      let resp_uses = case handler_response_ref(ep) {
+        Some(ref) -> ref_uses_dict(ref)
+        None -> False
+      }
       let body_uses = case ep.request_body {
         Some(b) -> ref_uses_dict(b.type_ref)
         None -> False
@@ -167,11 +171,32 @@ fn generate_header(
   // The query helpers below use all of these, so they come as a set rather than
   // per-parameter: a spec with only string parameters still emits the numeric
   // parsers, and a missing import there is a broken generated module.
+  // Query length checks and path segments like `{Sid}.json` both use it.
+  let string_import = case
+    query.uses_string || list.any(ir.endpoints, has_mixed_segment)
+  {
+    True -> "\nimport gleam/string"
+    False -> ""
+  }
+
   string.join([title_comment, "", method_imports], "\n")
   <> dict_import
   <> dynamic_import
   <> query.imports
+  <> string_import
   <> types_import
+}
+
+/// The response type in the endpoint's handler type: its first 2xx
+/// response's. Imports follow this, not every response, or a second success
+/// response or an error body imports a type nothing names.
+fn handler_response_ref(ep: Endpoint) -> option.Option(TypeRef) {
+  case
+    list.find(ep.responses, fn(r) { string.starts_with(r.status_code, "2") })
+  {
+    Ok(r) -> r.type_ref
+    Error(_) -> None
+  }
 }
 
 fn ref_uses_dict(ref: TypeRef) -> Bool {
@@ -238,11 +263,10 @@ fn generate_route_type(endpoints: List(Endpoint)) -> String {
 // ---------------------------------------------------------------------------
 
 fn generate_match_fn(endpoints: List(Endpoint)) -> String {
-  let cases =
+  let arms =
     endpoints
     |> list.map(fn(ep) {
-      let method_pattern = method_to_pattern(ep.method)
-      let segments_pattern = path_to_segments_pattern(ep.path)
+      let segments = path_segments(ep.path)
       let variant_name = to_pascal_case(ep.operation_id)
       let path_params =
         ep.parameters
@@ -261,12 +285,47 @@ fn generate_match_fn(endpoints: List(Endpoint)) -> String {
           variant_name <> "(" <> args <> ")"
         }
       }
+      Arm(
+        method: method_to_pattern(ep.method),
+        segments: segments,
+        constructor: constructor,
+        variables: list.map(segments, is_variable),
+      )
+    })
+    // A later arm that an earlier one already covers is an "unreachable
+    // pattern" warning; Box multiplexes several operations on one URL.
+    |> first_per_shape
+    // `/users/me` has to be tried before `/users/{id}`, whatever order the
+    // spec lists them in. The sort is stable, so arms that cannot shadow each
+    // other keep their order.
+    |> list.sort(fn(a, b) { compare_shapes(a.variables, b.variables) })
+
+  let cases =
+    arms
+    |> list.map(fn(arm) {
+      let Arm(method:, segments:, constructor:, ..) = arm
+      let patterns =
+        list.index_map(segments, fn(segment, i) {
+          case segment {
+            Literal(text) -> naming.string_literal(text)
+            Variable(name) -> naming.to_field_name(name)
+            Mixed(_) -> segment_local(i)
+          }
+        })
+      // Each mixed segment wraps the arm's result in the case that splits it.
+      let body =
+        list.index_fold(segments, constructor, fn(inner, segment, i) {
+          case segment {
+            Mixed(parts) -> split_segment(parts, segment_local(i), inner)
+            _ -> inner
+          }
+        })
       "    "
-      <> method_pattern
-      <> ", "
-      <> segments_pattern
-      <> " -> "
-      <> constructor
+      <> method
+      <> ", ["
+      <> string.join(patterns, ", ")
+      <> "] -> "
+      <> body
     })
     |> string.join("\n")
 
@@ -277,21 +336,191 @@ fn generate_match_fn(endpoints: List(Endpoint)) -> String {
   <> "  }\n}"
 }
 
-fn path_to_segments_pattern(path: String) -> String {
-  let segments =
-    path
-    |> string.split("/")
-    |> list.filter(fn(s) { s != "" })
-    |> list.map(fn(s) {
-      case string.starts_with(s, "{") && string.ends_with(s, "}") {
-        True -> {
-          let name = string.slice(s, 1, string.length(s) - 2)
-          naming.to_field_name(name)
-        }
-        False -> "\"" <> s <> "\""
+/// One `case` arm of `match_route`.
+type Arm {
+  Arm(
+    method: String,
+    segments: List(Segment),
+    constructor: String,
+    /// Per segment, whether it matches more than one string; the sort key.
+    variables: List(Bool),
+  )
+}
+
+fn first_per_shape(arms: List(Arm)) -> List(Arm) {
+  let shape = fn(arm: Arm) {
+    #(arm.method, list.map(arm.segments, segment_shape))
+  }
+  arms
+  |> list.fold(#([], set.new()), fn(state, arm) {
+    let #(kept, seen) = state
+    case set.contains(seen, shape(arm)) {
+      True -> state
+      False -> #([arm, ..kept], set.insert(seen, shape(arm)))
+    }
+  })
+  |> fn(state) { list.reverse(state.0) }
+}
+
+/// Whether matching `ep`'s path splits a segment in the arm's body.
+fn has_mixed_segment(ep: Endpoint) -> Bool {
+  list.any(path_segments(ep.path), fn(segment) {
+    case segment {
+      Mixed(_) -> True
+      _ -> False
+    }
+  })
+}
+
+/// One `/`-separated piece of a path template.
+type Segment {
+  Literal(String)
+  Variable(String)
+  /// Text and parameters within one segment: `{Sid}.json` (all of Twilio's
+  /// paths), `thumbnail.{extension}`, `{event_t}.{event_n}`.
+  Mixed(List(Part))
+}
+
+/// A piece of a `Mixed` segment.
+type Part {
+  Text(String)
+  Param(String)
+}
+
+/// The template's segments. A `#fragment` is never sent in a request, and Box
+/// uses one to give several operations the same URL, so it is dropped.
+fn path_segments(path: String) -> List(Segment) {
+  let path = case string.split_once(path, "#") {
+    Ok(#(before, _)) -> before
+    Error(_) -> path
+  }
+  path
+  |> string.split("/")
+  |> list.filter(fn(s) { s != "" })
+  |> list.map(fn(s) {
+    case segment_parts(s, []) {
+      [Param(name)] -> Variable(name)
+      [Text(text)] -> Literal(text)
+      parts -> Mixed(parts)
+    }
+  })
+}
+
+fn segment_parts(s: String, acc: List(Part)) -> List(Part) {
+  let done = fn(text) { list.reverse(push_text(acc, text)) }
+  case string.split_once(s, "{") {
+    Error(_) -> done(s)
+    Ok(#(before, after)) ->
+      case string.split_once(after, "}") {
+        Ok(#(name, rest)) ->
+          segment_parts(rest, [Param(name), ..push_text(acc, before)])
+        Error(_) -> done(s)
       }
-    })
-  "[" <> string.join(segments, ", ") <> "]"
+  }
+}
+
+fn push_text(acc: List(Part), text: String) -> List(Part) {
+  case text {
+    "" -> acc
+    _ -> [Text(text), ..acc]
+  }
+}
+
+/// Matches `local` against `parts` in the arm's body, since a pattern can only
+/// fix a string's prefix. Each parameter runs up to the next piece of text.
+/// Not matching gives `NotFound`, not the next arm: arms are sorted so that
+/// a fully literal one comes first.
+fn split_segment(parts: List(Part), local: String, inner: String) -> String {
+  let or_not_found = fn(pattern, then) {
+    "case "
+    <> local
+    <> " {\n"
+    <> pattern
+    <> " -> "
+    <> then
+    <> "\n_ -> NotFound\n}"
+  }
+  case parts {
+    [] -> or_not_found("\"\"", inner)
+    [Param(name)] ->
+      "{\nlet "
+      <> naming.to_field_name(name)
+      <> " = "
+      <> local
+      <> "\n"
+      <> inner
+      <> "\n}"
+    [Text(text), ..rest] ->
+      or_not_found(
+        naming.string_literal(text) <> " <> " <> local,
+        split_segment(rest, local, inner),
+      )
+    [Param(name), Text(text), ..rest] ->
+      "case string.split_once("
+      <> local
+      <> ", "
+      <> naming.string_literal(text)
+      <> ") {\nOk(#("
+      <> naming.to_field_name(name)
+      <> ", "
+      <> local
+      <> ")) -> "
+      <> split_segment(rest, local, inner)
+      <> "\n_ -> NotFound\n}"
+    // Two parameters with nothing between them cannot be told apart: the first
+    // takes the text and the second is empty.
+    [Param(first), Param(second), ..rest] ->
+      "{\nlet "
+      <> naming.to_field_name(second)
+      <> " = \"\"\n"
+      <> split_segment([Param(first), ..rest], local, inner)
+      <> "\n}"
+  }
+}
+
+fn segment_local(index: Int) -> String {
+  "segment_" <> int.to_string(index) <> "_"
+}
+
+/// What a segment matches, for telling whether two arms are the same.
+fn segment_shape(segment: Segment) -> String {
+  case segment {
+    Literal(text) -> "=" <> text
+    Variable(_) -> "*"
+    Mixed(parts) ->
+      "~"
+      <> string.join(
+        list.map(parts, fn(part) {
+          case part {
+            Text(text) -> "=" <> text
+            Param(_) -> "*"
+          }
+        }),
+        "",
+      )
+  }
+}
+
+fn is_variable(segment: Segment) -> Bool {
+  case segment {
+    Literal(_) -> False
+    Variable(_) | Mixed(_) -> True
+  }
+}
+
+/// Orders arms literal-first, position by position.
+fn compare_shapes(a: List(Bool), b: List(Bool)) -> order.Order {
+  case a, b {
+    [], [] -> order.Eq
+    [], _ -> order.Lt
+    _, [] -> order.Gt
+    [x, ..xs], [y, ..ys] ->
+      case x, y {
+        False, True -> order.Lt
+        True, False -> order.Gt
+        _, _ -> compare_shapes(xs, ys)
+      }
+  }
 }
 
 fn method_to_pattern(method: ir.HttpMethod) -> String {
@@ -412,7 +641,8 @@ pub fn to_snake_case(name: String) -> String {
 
 fn build_query_section(ir: CodegenIR, module_prefix: String) -> QuerySection {
   case endpoints_with_query(ir.endpoints) {
-    [] -> QuerySection(code: "", imports: "", enum_types: [])
+    [] ->
+      QuerySection(code: "", imports: "", enum_types: [], uses_string: False)
     with_query -> {
       let enums = query_enum_names(ir, module_prefix)
       let params = list.flat_map(with_query, query_params)
@@ -449,7 +679,13 @@ fn build_query_section(ir: CodegenIR, module_prefix: String) -> QuerySection {
 
       QuerySection(
         code: code,
-        imports: query_imports(params, kept, enums),
+        imports: query_imports(params, kept),
+        uses_string: list.any(params, fn(p) {
+          let #(value_checks, _) = query_checks(p, enums)
+          list.any(value_checks, fn(c) {
+            string.contains(c.condition, "string.to_utf_codepoints(")
+          })
+        }),
         enum_types: params
           |> list.filter_map(fn(p) {
             case query_enum_of(p, enums) {
@@ -468,24 +704,8 @@ fn build_query_section(ir: CodegenIR, module_prefix: String) -> QuerySection {
 /// pass, never by searching the rendered text: an import that disagrees with the
 /// code is either a warning or a missing module, and both land in a file the
 /// consumer cannot edit.
-fn query_imports(
-  params: List(ir.EndpointParam),
-  kept: List(String),
-  enums: List(String),
-) -> String {
+fn query_imports(params: List(ir.EndpointParam), kept: List(String)) -> String {
   let keep = fn(name) { list.contains(kept, name) }
-  // A string length check counts code points with string.to_utf_codepoints.
-  let strings = case
-    list.any(params, fn(p) {
-      let #(value_checks, _) = query_checks(p, enums)
-      list.any(value_checks, fn(c) {
-        string.contains(c.condition, "string.to_utf_codepoints(")
-      })
-    })
-  {
-    True -> ["\nimport gleam/string"]
-    False -> []
-  }
 
   let floats = case keep("parse_float_param") {
     True -> ["\nimport gleam/float"]
@@ -512,7 +732,6 @@ fn query_imports(
       ["\nimport gleam/list"],
       options,
       ["\nimport gleam/result"],
-      strings,
     ]),
   )
 }
@@ -560,11 +779,12 @@ pub fn query_enum_names(ir: CodegenIR, module_prefix: String) -> List(String) {
 
 fn generate_query_record(ep: Endpoint, enums: List(String)) -> String {
   let name = query_record_name(ep)
+  let names = query_field_names(ep)
   let fields =
     query_params(ep)
     |> list.map(fn(p) {
       "    "
-      <> naming.to_field_name(p.name)
+      <> naming.param_name(names, p)
       <> ": "
       <> query_field_type(p, enums)
     })
@@ -596,34 +816,33 @@ fn query_field_type(p: ir.EndpointParam, enums: List(String)) -> String {
 }
 
 fn query_scalar_type(ref: TypeRef, enums: List(String)) -> String {
-  case ir.strip_optional(ref) {
-    Named(name) ->
-      case list.contains(enums, name) {
-        True -> name
-        False -> "String"
-      }
-    other -> type_ref_to_string(other)
-  }
+  type_ref_to_string(ir.param_scalar(ref, enums))
 }
 
 /// The primitive a query value parses into. Anything that is not a primitive —
 /// a named record, a dict — is read as text, which is what the field type says
 /// too.
 fn param_base_primitive(p: ir.EndpointParam) -> ir.PrimitiveType {
-  case ir.base_primitive(p.type_ref) {
-    Some(prim) -> prim
-    None -> ir.PString
+  let scalar = case ir.strip_optional(p.type_ref) {
+    Array(item) -> ir.strip_optional(item)
+    other -> other
+  }
+  // An enum is parsed as text, then checked against its members.
+  case ir.param_scalar(scalar, []) {
+    Primitive(prim) -> prim
+    _ -> ir.PString
   }
 }
 
 fn generate_query_parser(ep: Endpoint, enums: List(String)) -> String {
   let name = query_record_name(ep)
   let params = query_params(ep)
+  let names = query_field_names(ep)
 
   let bindings =
     params
     |> list.map(fn(p) {
-      let field = naming.to_field_name(p.name)
+      let field = naming.param_name(names, p)
       "  use " <> field <> " <- result.try(" <> query_read_expr(p, enums) <> ")"
     })
     |> string.join("\n")
@@ -632,7 +851,7 @@ fn generate_query_parser(ep: Endpoint, enums: List(String)) -> String {
   // enough and the two cannot drift apart.
   let fields =
     params
-    |> list.map(fn(p) { "    " <> naming.to_field_name(p.name) <> ":," })
+    |> list.map(fn(p) { "    " <> naming.param_name(names, p) <> ":," })
     |> string.join("\n")
 
   "/// Reads "

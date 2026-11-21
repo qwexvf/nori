@@ -91,7 +91,7 @@ pub fn generate(
     specs
     |> list.map(fn(spec) {
       "    "
-      <> string_literal(spec.name)
+      <> naming.string_literal(spec.name)
       <> " ->\n      decode.run(arguments, "
       <> arguments_fn_name(spec)
       <> "())\n      |> result.map_error(InvalidArguments)"
@@ -203,7 +203,7 @@ fn render_tool(spec: ToolSpec, defs: Dict(String, TypeDef)) -> String {
     |> option.or(ep.summary)
     |> option.unwrap(ep.operation_id)
   let title = case ep.summary {
-    Some(s) -> "Some(" <> string_literal(s) <> ")"
+    Some(s) -> "Some(" <> naming.string_literal(s) <> ")"
     None -> "None"
   }
   let output = case output_schema(spec, defs) {
@@ -211,21 +211,21 @@ fn render_tool(spec: ToolSpec, defs: Dict(String, TypeDef)) -> String {
     None -> "None"
   }
   "    Tool(\n      name: "
-  <> string_literal(spec.name)
+  <> naming.string_literal(spec.name)
   <> ",\n      title: "
   <> title
   <> ",\n      description: "
-  <> string_literal(description)
+  <> naming.string_literal(description)
   <> ",\n      input_schema: "
   <> render(input_schema(spec, defs))
   <> ",\n      output_schema: "
   <> output
   <> ",\n      scopes: ["
-  <> string.join(list.map(spec.scopes, string_literal), ", ")
+  <> string.join(list.map(spec.scopes, naming.string_literal), ", ")
   <> "],\n      confirm: "
   <> bool_literal(spec.confirm)
   <> ",\n      operation_id: "
-  <> string_literal(ep.operation_id)
+  <> naming.string_literal(ep.operation_id)
   <> ",\n    )"
 }
 
@@ -552,13 +552,14 @@ fn render_arguments_decoder(spec: ToolSpec, enums: List(String)) -> String {
       "  use "
       <> local(p.name)
       <> " <- decode.field("
-      <> string_literal(p.name)
+      <> naming.string_literal(p.name)
       <> ", "
       <> gleam_types.value_decoder(p.type_ref, p.constraints, "types.")
       <> ")"
     })
   let query_params = gleam_routes.query_params(ep)
-  let query_lines = list.map(query_params, query_field_line(_, enums))
+  let names = gleam_routes.query_field_names(ep)
+  let query_lines = list.map(query_params, query_field_line(names, _, enums))
   let body_lines = case ep.request_body {
     Some(rb) -> {
       let dec =
@@ -586,7 +587,9 @@ fn render_arguments_decoder(spec: ToolSpec, enums: List(String)) -> String {
       <> {
         query_params
         |> list.map(fn(p) {
-          naming.to_field_name(p.name) <> ": " <> query_local(p.name)
+          naming.param_name(names, p)
+          <> ": "
+          <> query_local(naming.param_name(names, p))
         })
         |> string.join(", ")
       }
@@ -618,19 +621,14 @@ fn render_arguments_decoder(spec: ToolSpec, enums: List(String)) -> String {
 /// query record has: an enum as its type, any other named type as `String`
 /// (the query reader cannot build a record from text either), a list empty
 /// when absent.
-fn query_field_line(p: ir.EndpointParam, enums: List(String)) -> String {
-  let as_text = fn(ref: TypeRef) {
-    case ref {
-      ir.Named(name) ->
-        case list.contains(enums, name) {
-          True -> ref
-          False -> ir.Primitive(ir.PString)
-        }
-      other -> other
-    }
-  }
-  let key = string_literal(p.name)
-  let var = query_local(p.name)
+fn query_field_line(
+  names: naming.ParamNames,
+  p: ir.EndpointParam,
+  enums: List(String),
+) -> String {
+  let as_text = ir.param_scalar(_, enums)
+  let key = naming.string_literal(p.name)
+  let var = query_local(naming.param_name(names, p))
   case ir.strip_optional(p.type_ref) {
     ir.Array(item) -> {
       let dec =
@@ -674,8 +672,8 @@ fn local(name: String) -> String {
   "p_" <> naming.to_snake_case(name)
 }
 
-fn query_local(name: String) -> String {
-  "q_" <> naming.to_snake_case(name)
+fn query_local(field: String) -> String {
+  "q_" <> field
 }
 
 /// The Gleam type of a value in a `ToolCall`, with named types qualified.
@@ -735,6 +733,10 @@ fn header(
       "import gleam/json.{type Json}",
       "import gleam/list",
     ],
+    case uses("int.to_float") {
+      True -> ["import gleam/int"]
+      False -> []
+    },
     ["import gleam/option.{type Option, None, Some}", "import gleam/result"],
     case uses("string.to_utf_codepoints(") {
       True -> ["import gleam/string"]
@@ -822,7 +824,7 @@ fn render(j: J) -> String {
       "json.object(["
       <> string.join(
         list.map(entries, fn(e) {
-          "#(" <> string_literal(e.0) <> ", " <> render(e.1) <> ")"
+          "#(" <> naming.string_literal(e.0) <> ", " <> render(e.1) <> ")"
         }),
         ", ",
       )
@@ -831,7 +833,7 @@ fn render(j: J) -> String {
       "json.preprocessed_array(["
       <> string.join(list.map(items, render), ", ")
       <> "])"
-    JStr(s) -> "json.string(" <> string_literal(s) <> ")"
+    JStr(s) -> "json.string(" <> naming.string_literal(s) <> ")"
     JInt(n) -> "json.int(" <> int.to_string(n) <> ")"
     JFloat(f) -> float_json(f)
     JRaw(code) -> code
@@ -845,15 +847,6 @@ fn float_json(f: Float) -> String {
     order.Eq -> "json.int(" <> int.to_string(float.truncate(f)) <> ")"
     _ -> "json.float(" <> float.to_string(f) <> ")"
   }
-}
-
-fn string_literal(value: String) -> String {
-  let escaped =
-    value
-    |> string.replace("\\", "\\\\")
-    |> string.replace("\"", "\\\"")
-    |> string.replace("\n", "\\n")
-  "\"" <> escaped <> "\""
 }
 
 fn bool_literal(b: Bool) -> String {

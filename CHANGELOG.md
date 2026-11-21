@@ -44,6 +44,50 @@
   `gleam` on PATH, so the output passes `gleam format --check` (#36). It never
   fails the run: without `gleam` on PATH it prints a note, and a formatter
   error is printed as a warning. `--no-format` skips it.
+- OpenAPI 3.0.4 and 3.1.2 documents are accepted. A document that fails to
+  decode now says where (`expected ..., found ... at openapi`).
+
+### Fixed
+
+Found by generating from the Kubernetes, Stripe, GitHub, Twilio, Box, Jira,
+Discord, Spotify and Swagger Petstore v3 specs and compiling the output.
+
+- Unions of scalars (`oneOf: [string, number]`, Kubernetes' Quantity and
+  IntOrString) get a decoder and an encoder, and type aliases (`Time`, a
+  `string` with a format) get both too; other types called them although they
+  were never emitted (#62). A union constructor that would clash with another
+  in the module, such as two unions each with a `StringVariant`, is prefixed
+  with its union's name. Constructors that did not clash keep their names.
+- A schema that is `allOf` a single `$ref` and nothing else is an alias of the
+  referenced type instead of a record with no fields.
+- A JSON `number` decodes when written without a fraction (`1`); on Erlang
+  `decode.float` alone rejected it.
+- Two schema names that differ only in case or punctuation (`Fields` and
+  `fields`) no longer define one type twice; the later one gets a number.
+- Field labels from properties starting with `_` (`_links`, `_type`) or a digit
+  are valid Gleam (`links_`).
+- Client: a path and a query parameter with the same name, or names that only
+  differ in punctuation (`DateCreated<`), get distinct arguments. A parameter
+  of a record, union or `Dynamic` type is passed as `String`, as the routes'
+  query readers already did. A non-JSON or binary response is returned as the
+  body text instead of being parsed as JSON. Optional body values use
+  `option.Some`, which the client imports.
+- Routes: `/users/me` is matched before `/users/{id}` whatever the spec order;
+  a segment with text around its parameter (`{Sid}.json`,
+  `thumbnail.{extension}`) is matched; a `#fragment` in a path key is ignored;
+  a hyphenated operationId gives a valid constructor; a route that repeats an
+  earlier pattern is dropped instead of being an unreachable arm.
+- Middleware: a public route with path parameters is matched as `Route(..)`.
+- A record with more than 64 fields is decoded in parts. The Gleam compiler
+  (1.18) crashes on a chain of about 200 `use` lines, which Twilio's
+  `CreateSiprecRequest` produced.
+- A form or multipart request body no longer blocks generation when the same
+  body also offers `application/json`, which is what the client sends.
+- Generated encoders no longer bind values they ignore (`Dynamic`, binary),
+  which were unused-variable warnings; client and routes import only what the
+  first success response uses.
+- Naming the inline objects of a large spec took minutes (Stripe: over ten);
+  it now takes about two seconds.
 
 ## v2.0.0 - 2026-08-25
 

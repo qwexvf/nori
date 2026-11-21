@@ -6,8 +6,12 @@
 //// `types.<name>_decoder()` in client.gleam, so any drift between two copies
 //// produces a call to a function that was never generated.
 
+import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
+import gleam/set.{type Set}
 import gleam/string
+import nori/codegen/ir
 
 /// Convert a PascalCase, camelCase, hyphenated, or dotted name to snake_case.
 ///
@@ -62,11 +66,29 @@ fn is_upper(c: String) -> Bool {
 /// record does not parse. Keywords, including the ones Gleam reserves for
 /// future use, get a trailing underscore. Only the identifier changes; the JSON
 /// key and the URL placeholder keep the name from the spec.
+///
+/// A label cannot start with an underscore or a digit either. `_links` and
+/// `_type` are common (HAL, Jira), so leading underscores move to the end
+/// (`links_`), and a leading digit gets a letter in front.
 pub fn to_field_name(name: String) -> String {
   let snake = to_snake_case(name)
+  let trimmed = trim_leading_underscores(snake)
+  let moved = string.repeat("_", string.length(snake) - string.length(trimmed))
+  let snake = case trimmed, starts_with_digit(trimmed) {
+    "", _ -> "value" <> snake
+    _, True -> "n" <> trimmed <> moved
+    _, False -> trimmed <> moved
+  }
   case list.contains(keywords, snake) {
     True -> snake <> "_"
     False -> snake
+  }
+}
+
+fn trim_leading_underscores(s: String) -> String {
+  case s {
+    "_" <> rest -> trim_leading_underscores(rest)
+    _ -> s
   }
 }
 
@@ -75,6 +97,103 @@ const keywords = [
   "fn", "if", "implement", "import", "let", "macro", "opaque", "panic", "pub",
   "test", "todo", "type", "use",
 ]
+
+/// Argument names for one function's parameters, unique within it.
+pub opaque type ParamNames {
+  ParamNames(by_param: Dict(#(String, ir.ParamLocation), String))
+}
+
+/// Names for `params`, in spec order.
+///
+/// A parameter is unique by name and location, so a path and a query parameter
+/// may share a name: Kubernetes' proxy endpoints have both a `{path}` segment
+/// and a `?path=`. Names can also meet once punctuation is gone: Twilio has
+/// `DateCreated`, `DateCreated<` and `DateCreated>`. The first keeps the plain
+/// name, a later one gets its location appended, then a number.
+///
+/// Built once per function and looked up per parameter: generators ask for a
+/// name in several places, and recomputing the set each time made the work
+/// cubic in the parameter count.
+pub fn param_names(params: List(ir.EndpointParam)) -> ParamNames {
+  let names =
+    params
+    |> list.map(fn(p) {
+      let base = to_field_name(p.name)
+      #(base, base <> "_" <> location_word(p.location))
+    })
+    |> unique
+  params
+  |> list.map(fn(p) { #(p.name, p.location) })
+  |> list.zip(names)
+  |> dict.from_list
+  |> ParamNames
+}
+
+/// Labels for a record's properties, in order. `+1` and `-1` (GitHub's
+/// reactions) are both `n1_` as field names; the second becomes `n1__2`.
+pub fn unique_field_names(names: List(String)) -> List(String) {
+  names
+  |> list.map(fn(name) {
+    let base = to_field_name(name)
+    #(base, base)
+  })
+  |> unique
+}
+
+/// One name per `#(preferred, fallback)`, in order: the preferred name if no
+/// earlier entry took it, else the fallback, numbered until it is free.
+fn unique(candidates: List(#(String, String))) -> List(String) {
+  candidates
+  |> list.fold(#([], set.new()), fn(state, candidate) {
+    let #(names, taken) = state
+    let #(preferred, fallback) = candidate
+    let name = case set.contains(taken, preferred) {
+      False -> preferred
+      True -> numbered(fallback, taken, 1)
+    }
+    #([name, ..names], set.insert(taken, name))
+  })
+  |> fn(state) { list.reverse(state.0) }
+}
+
+/// `p`'s name in `names`; a parameter that was not in the list gets its plain
+/// field name.
+pub fn param_name(names: ParamNames, p: ir.EndpointParam) -> String {
+  case dict.get(names.by_param, #(p.name, p.location)) {
+    Ok(name) -> name
+    Error(_) -> to_field_name(p.name)
+  }
+}
+
+fn numbered(base: String, taken: Set(String), n: Int) -> String {
+  let candidate = case n {
+    1 -> base
+    _ -> base <> "_" <> int.to_string(n)
+  }
+  case set.contains(taken, candidate) {
+    True -> numbered(base, taken, n + 1)
+    False -> candidate
+  }
+}
+
+/// `value` as a Gleam string literal.
+pub fn string_literal(value: String) -> String {
+  let escaped =
+    value
+    |> string.replace("\\", "\\\\")
+    |> string.replace("\"", "\\\"")
+    |> string.replace("\n", "\\n")
+  "\"" <> escaped <> "\""
+}
+
+fn location_word(location: ir.ParamLocation) -> String {
+  case location {
+    ir.PathParam -> "path"
+    ir.QueryParam -> "query"
+    ir.HeaderParam -> "header"
+    ir.CookieParam -> "cookie"
+  }
+}
 
 /// Turn a schema name into a Gleam type name.
 ///
@@ -128,8 +247,19 @@ fn is_alphanumeric(c: String) -> Bool {
 ///
 /// gleam_routes emits the Route variants and gleam_middleware matches on them,
 /// so this has the same must-agree property as to_snake_case.
+///
+/// An operationId such as `remove-items-playlist` is legal in OpenAPI, so any
+/// character that cannot appear in an identifier separates words like `_` does.
 pub fn to_pascal_case(name: String) -> String {
   name
+  |> string.to_graphemes
+  |> list.map(fn(c) {
+    case is_identifier_char(c) {
+      True -> c
+      False -> "_"
+    }
+  })
+  |> string.join("")
   |> string.split("_")
   |> list.map(capitalize)
   |> string.join("")

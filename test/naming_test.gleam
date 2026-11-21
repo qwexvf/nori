@@ -1,4 +1,6 @@
+import gleam/option.{None}
 import gleeunit/should
+import nori/codegen/ir
 import nori/codegen/naming
 import nori/codegen/scan
 
@@ -88,4 +90,46 @@ pub fn to_field_name_escapes_keywords_test() {
   naming.to_field_name("use") |> should.equal("use_")
   naming.to_field_name("typeName") |> should.equal("type_name")
   naming.to_field_name("userId") |> should.equal("user_id")
+}
+
+pub fn to_field_name_moves_leading_underscores_test() {
+  naming.to_field_name("_links") |> should.equal("links_")
+  naming.to_field_name("__v") |> should.equal("v__")
+  naming.to_field_name("_type") |> should.equal("type_")
+  naming.to_field_name("2fa") |> should.equal("n2fa")
+  naming.to_field_name("+1") |> should.equal("n1_")
+}
+
+pub fn unique_field_names_number_repeats_test() {
+  naming.unique_field_names(["+1", "-1", "id"])
+  |> should.equal(["n1_", "n1__2", "id"])
+}
+
+pub fn param_names_are_unique_per_function_test() {
+  let param = fn(name, location) {
+    ir.EndpointParam(
+      name: name,
+      location: location,
+      type_ref: ir.Primitive(ir.PString),
+      required: False,
+      description: None,
+      constraints: ir.no_constraints(),
+    )
+  }
+  let path = param("path", ir.PathParam)
+  let query_path = param("path", ir.QueryParam)
+  let created = param("DateCreated", ir.QueryParam)
+  let before = param("DateCreated<", ir.QueryParam)
+  let after = param("DateCreated>", ir.QueryParam)
+  let names = naming.param_names([path, query_path, created, before, after])
+  naming.param_name(names, path) |> should.equal("path")
+  naming.param_name(names, query_path) |> should.equal("path_query")
+  naming.param_name(names, created) |> should.equal("date_created")
+  naming.param_name(names, before) |> should.equal("date_created_")
+  naming.param_name(names, after) |> should.equal("date_created__query")
+}
+
+pub fn to_pascal_case_splits_on_punctuation_test() {
+  naming.to_pascal_case("remove-items-playlist")
+  |> should.equal("RemoveItemsPlaylist")
 }

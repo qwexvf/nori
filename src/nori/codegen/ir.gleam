@@ -11,6 +11,7 @@
 
 import gleam/dict.{type Dict}
 import gleam/json.{type Json}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 
 /// The complete codegen IR — everything a generator needs to produce code.
@@ -258,5 +259,24 @@ pub fn base_primitive(ref: TypeRef) -> Option(PrimitiveType) {
     Array(item) -> base_primitive(item)
     Primitive(prim) -> Some(prim)
     _ -> None
+  }
+}
+
+/// What a path, query or header value is written and read as: an enum in
+/// `enum_names`, an Int, Float or Bool, and otherwise text. A record, union,
+/// map or `Unknown` has no single string form, so the caller supplies one.
+///
+/// The client's arguments, the routes' query records and the MCP decoder all
+/// type the same parameter, so they must agree; this is the one rule. A list
+/// parameter applies it to its elements.
+pub fn param_scalar(ref: TypeRef, enum_names: List(String)) -> TypeRef {
+  case strip_optional(ref) {
+    Named(name) ->
+      case list.contains(enum_names, name) {
+        True -> Named(name)
+        False -> Primitive(PString)
+      }
+    Primitive(PInt) as p | Primitive(PFloat) as p | Primitive(PBool) as p -> p
+    _ -> Primitive(PString)
   }
 }
