@@ -433,7 +433,11 @@ fn generate_enum_from_string(
   let cases =
     variants
     |> list.map(fn(v) {
-      "    \"" <> v.value <> "\" -> gleam.Ok(" <> v.name <> ")"
+      "    "
+      <> naming.string_literal(v.value)
+      <> " -> gleam.Ok("
+      <> v.name
+      <> ")"
     })
     |> string.join("\n")
 
@@ -450,7 +454,9 @@ fn generate_enum_to_string(name: String, variants: List(EnumVariant)) -> String 
   let fn_name = to_snake_case(name) <> "_to_string"
   let cases =
     variants
-    |> list.map(fn(v) { "    " <> v.name <> " -> \"" <> v.value <> "\"" })
+    |> list.map(fn(v) {
+      "    " <> v.name <> " -> " <> naming.string_literal(v.value)
+    })
     |> string.join("\n")
 
   "pub fn "
@@ -847,14 +853,10 @@ fn generate_encoder(typedef: TypeDef, variants: Variants) -> String {
 }
 
 fn generate_alias_encoder(name: String, target: TypeRef) -> String {
-  let param = case encoder_reads_value(target) {
-    True -> "value"
-    False -> "_value"
-  }
   "pub fn encode_"
   <> to_snake_case(name)
   <> "("
-  <> param
+  <> binding("value", target)
   <> ": "
   <> name
   <> ") -> Json {\n  "
@@ -973,14 +975,10 @@ fn generate_union_encoder(
       let arms =
         members
         |> list.map(fn(member) {
-          let binding = case encoder_reads_value(member.0) {
-            True -> "v"
-            False -> "_"
-          }
           "    "
           <> member.1
           <> "("
-          <> binding
+          <> binding("v", member.0)
           <> ") -> "
           <> type_ref_encoder("v", member.0)
           <> "\n"

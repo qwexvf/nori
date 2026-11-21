@@ -13,6 +13,7 @@ import gleam/dict.{type Dict}
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 
 /// The complete codegen IR — everything a generator needs to produce code.
 pub type CodegenIR {
@@ -278,5 +279,28 @@ pub fn param_scalar(ref: TypeRef, enum_names: List(String)) -> TypeRef {
       }
     Primitive(PInt) as p | Primitive(PFloat) as p | Primitive(PBool) as p -> p
     _ -> Primitive(PString)
+  }
+}
+
+/// The response an endpoint's success is typed by: its lowest 2xx status.
+///
+/// The client's decoder, the routes' handler type and the MCP output schema
+/// all describe this one response, so they take it from here rather than each
+/// picking a 2xx by its own rule.
+pub fn success_response(ep: Endpoint) -> Option(ResponseIR) {
+  ep.responses
+  |> list.sort(fn(a, b) { string.compare(a.status_code, b.status_code) })
+  |> list.find(fn(r) { string.starts_with(r.status_code, "2") })
+  |> option.from_result
+}
+
+/// Whether `prim` appears anywhere in `ref`: through lists, map values and
+/// optional wrappers. `base_primitive` stops at a map.
+pub fn mentions_primitive(ref: TypeRef, prim: PrimitiveType) -> Bool {
+  case ref {
+    Primitive(p) -> p == prim
+    Array(inner) | Nullable(inner) | Optional(inner) | Dict(_, inner) ->
+      mentions_primitive(inner, prim)
+    Named(_) | Literal(_) | Unknown -> False
   }
 }

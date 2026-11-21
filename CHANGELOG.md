@@ -102,6 +102,19 @@ output (`examples/public_specs/check.sh`).
   first success response uses.
 - Naming the inline objects of a large spec took minutes (Stripe: over ten);
   it now takes about two seconds.
+- Routes: a segment like `{id}.json` that does not match lets the next route
+  try instead of answering `NotFound`, and is tried before a plain `{id}` in
+  the same place.
+- MCP: a tool's argument keys are unique: a query `path` next to a `{path}`
+  segment is `path_query`, a parameter named `body` is `body_query`.
+- Client: a nullable Int, Float, Bool or enum parameter is converted to text;
+  a map-of-number response imports gleam/int; parameter names, enum values
+  and const bodies containing `"` or `\` are escaped.
+- A duplicate operationId is numbered until both its function and its
+  constructor name are free. A discriminator `mapping` that names a renamed
+  schema without `$ref` follows the rename.
+- The client, routes and MCP generators agree on the success response: the
+  lowest 2xx status.
 
 ## v2.0.0 - 2026-08-25
 

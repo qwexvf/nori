@@ -15,6 +15,7 @@
 //// scratch project's dependencies.
 
 import gleam/list
+import gleam/option.{Some}
 import gleam/string
 import gleeunit/should
 import nori/codegen/gleam_client
@@ -1313,6 +1314,7 @@ import gleam/dynamic/decode
 import gleam/io
 import gleam/json
 import gleam/list
+import gleam/option.{Some}
 import gleam/string
 
 fn call(label: String, name: String, arguments: String) -> Nil {
@@ -1836,4 +1838,219 @@ pub fn main() {
   assert_line("basic=Ok(#(\"alice\", \"s3cret\"))")
   assert_line("bad_basic=Error(Nil)")
   assert_line("bearer=Error(Nil)")
+}
+
+/// Findings from reviewing #63: shapes that still produced code that did not
+/// compile. A map-of-number response needs gleam/int; a nullable Int
+/// parameter is typed and stringified as an Int; quotes in parameter names,
+/// enum values and const bodies are escaped; a numbered duplicate operationId
+/// must not meet an existing one as a constructor; a discriminator mapping
+/// that names a renamed schema bare follows the rename.
+pub fn review_shapes_output_compiles_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Review
+  version: '1.0.0'
+paths:
+  /scores/{count}:
+    get:
+      operationId: deleteWebhook
+      parameters:
+        - {name: count, in: path, required: true, schema: {type: [integer, 'null']}}
+        - {name: 'say\"what', in: query, schema: {type: [integer, 'null']}}
+        - {name: X-Limit, in: header, schema: {type: integer, nullable: true}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: {type: number}}
+  /a:
+    post:
+      operationId: deleteWebhook
+      requestBody:
+        content:
+          application/json:
+            schema: {const: 'a\"b'}
+      responses:
+        '204': {description: OK}
+  /b:
+    get:
+      operationId: deleteWebhook2
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Shape'}
+components:
+  schemas:
+    Mood:
+      type: string
+      enum: ['say \"hi\"', 'back\\\\slash']
+    Fields:
+      type: object
+      properties:
+        kind: {type: string}
+    fields:
+      type: object
+      properties:
+        kind: {type: string}
+    Shape:
+      oneOf:
+        - $ref: '#/components/schemas/Fields'
+        - $ref: '#/components/schemas/fields'
+      discriminator:
+        propertyName: kind
+        mapping:
+          upper: Fields
+          lower: fields
+"
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let codegen_ir = ir_builder.build(doc)
+  should_compile(codegen_ir)
+
+  // The bare `lower: fields` mapping follows `fields` to its new name.
+  let assert Ok(ir.UnionType(discriminator: Some(d), ..)) =
+    list.find(codegen_ir.types, fn(t) {
+      case t {
+        ir.UnionType(name: "Shape", ..) -> True
+        _ -> False
+      }
+    })
+  list.map(d.mapping, fn(pair) { pair.1 })
+  |> list.unique
+  |> list.length
+  |> should.equal(2)
+}
+
+/// A mixed segment that fails its split lets the next route try, and is tried
+/// before a plain parameter in the same place.
+pub fn mixed_segment_falls_through_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Fallthrough
+  version: '1.0.0'
+paths:
+  /files/{id}:
+    get:
+      operationId: getFile
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: OK}
+  /files/{id}.json:
+    get:
+      operationId: getFileJson
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: OK}
+  /x/{a}.json:
+    get:
+      operationId: getJson
+      parameters:
+        - {name: a, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: OK}
+  /x/{a}.xml:
+    get:
+      operationId: getXml
+      parameters:
+        - {name: a, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: OK}
+"
+  let main_source =
+    "import generated/routes
+import gleam/http
+import gleam/io
+import gleam/string
+
+fn show(path: List(String)) -> Nil {
+  io.println(string.join(path, \"/\") <> \"=\" <> string.inspect(routes.match_route(http.Get, path)))
+}
+
+pub fn main() {
+  show([\"files\", \"1\"])
+  show([\"files\", \"1.json\"])
+  show([\"x\", \"a.json\"])
+  show([\"x\", \"a.xml\"])
+  show([\"x\", \"a.csv\"])
+}
+"
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+  assert_line("files/1=GetFile(\"1\")")
+  assert_line("files/1.json=GetFileJson(\"1\")")
+  assert_line("x/a.json=GetJson(\"a\")")
+  assert_line("x/a.xml=GetXml(\"a\")")
+  assert_line("x/a.csv=NotFound")
+}
+
+/// A tool's arguments are one JSON object, so a path and a query parameter
+/// with one name, or a parameter named `body`, need distinct keys.
+pub fn mcp_argument_keys_are_distinct_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Keys
+  version: '1.0.0'
+paths:
+  /proxy/{path}:
+    post:
+      operationId: proxy
+      x-mcp: { tool: proxy }
+      parameters:
+        - {name: path, in: path, required: true, schema: {type: string}}
+        - {name: path, in: query, schema: {type: string}}
+        - {name: body, in: query, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: string}
+      responses:
+        '204': {description: OK}
+"
+  let main_source =
+    "import generated/mcp
+import gleam/dynamic/decode
+import gleam/io
+import gleam/json
+import gleam/string
+
+pub fn main() {
+  let assert Ok(tool) = mcp.tool(\"proxy\")
+  io.println(\"schema=\" <> json.to_string(mcp.tool_to_json(tool)))
+  let assert Ok(args) =
+    json.parse(
+      \"{\\\"path\\\":\\\"a/b\\\",\\\"path_query\\\":\\\"q\\\",\\\"body_query\\\":\\\"x\\\",\\\"body\\\":\\\"payload\\\"}\",
+      decode.dynamic,
+    )
+  io.println(\"call=\" <> string.inspect(mcp.decode_call(\"proxy\", args)))
+}
+"
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+  assert_line("\"path_query\":")
+  assert_line("\"body_query\":")
+  assert_line("\"a/b\"")
+  assert_line("Some(\"q\")")
+  assert_line("Some(\"x\")")
+  assert_line("\"payload\"")
 }
