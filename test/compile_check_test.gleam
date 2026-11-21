@@ -19,6 +19,7 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import gleeunit/should
+import nori
 import nori/codegen/gleam_client
 import nori/codegen/gleam_mcp
 import nori/codegen/gleam_middleware
@@ -2187,39 +2188,30 @@ fn codecs_source(ir: CodegenIR) -> String {
 /// every decoder. 1,700 types each refer to the one before; `Ping` and `Pong`
 /// refer to each other and so share a part.
 pub fn codecs_split_into_parts_test() {
+  // Written as JSON: on JavaScript taffy's YAML parser recurses once per
+  // mapping entry, and 1,700 schemas overflow Node's stack.
   let chain =
     int.range(from: 1699, to: -1, with: [], run: fn(acc, i) { [i, ..acc] })
     |> list.map(fn(i) {
       let n = int.to_string(i)
       case i {
         0 ->
-          "    T0:\n      type: object\n      properties:\n        v: {type: string}\n"
+          "\"T0\": {\"type\": \"object\", \"properties\": {\"v\": {\"type\": \"string\"}}}"
         _ ->
-          "    T"
+          "\"T"
           <> n
-          <> ":\n      type: object\n      properties:\n        prev: {$ref: '#/components/schemas/T"
+          <> "\": {\"type\": \"object\", \"properties\": {\"prev\": {\"$ref\": \"#/components/schemas/T"
           <> int.to_string(i - 1)
-          <> "'}\n"
+          <> "\"}}}"
       }
     })
-    |> string.concat
-  let yaml_str = "openapi: '3.1.0'
-info:
-  title: Split
-  version: '1.0.0'
-paths: {}
-components:
-  schemas:
-    Ping:
-      type: object
-      properties:
-        last: {$ref: '#/components/schemas/T1699'}
-        pong: {$ref: '#/components/schemas/Pong'}
-    Pong:
-      type: object
-      properties:
-        ping: {$ref: '#/components/schemas/Ping'}
-" <> chain
+    |> string.join(", ")
+  let json_str =
+    "{\"openapi\": \"3.1.0\", \"info\": {\"title\": \"Split\", \"version\": \"1.0.0\"}, \"paths\": {}, \"components\": {\"schemas\": {"
+    <> "\"Ping\": {\"type\": \"object\", \"properties\": {\"last\": {\"$ref\": \"#/components/schemas/T1699\"}, \"pong\": {\"$ref\": \"#/components/schemas/Pong\"}}}, "
+    <> "\"Pong\": {\"type\": \"object\", \"properties\": {\"ping\": {\"$ref\": \"#/components/schemas/Ping\"}}}, "
+    <> chain
+    <> "}}}"
   let main_source =
     "import generated/codecs
 import gleam/io
@@ -2231,7 +2223,7 @@ pub fn main() {
   io.println(\"ping=\" <> string.inspect(json.parse(input, codecs.ping_decoder())))
 }
 "
-  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let assert Ok(doc) = nori.parse_json(json_str)
   let codegen_ir = ir_builder.build(doc)
   let files =
     gleam_types.generate_codecs(codegen_ir, module_prefix)

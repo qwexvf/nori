@@ -333,6 +333,10 @@ fn named_in(ref: TypeRef) -> List(String) {
 
 /// Tarjan's algorithm: the strongly connected components of the graph, each
 /// listed after every component it has an edge to.
+///
+/// The depth-first walk keeps its own stack of frames rather than recursing:
+/// a chain of 1,700 types that each refer to the next overflowed Node's
+/// stack.
 fn strongly_connected(
   nodes: List(String),
   edges: fn(String) -> List(String),
@@ -341,7 +345,7 @@ fn strongly_connected(
     list.fold(nodes, new_tarjan(), fn(state, node) {
       case dict.has_key(state.index, node) {
         True -> state
-        False -> tarjan_visit(state, node, edges)
+        False -> walk(enter(state, node), [#(node, edges(node))], edges)
       }
     })
   list.reverse(state.components)
@@ -369,44 +373,61 @@ fn new_tarjan() -> Tarjan {
   )
 }
 
-fn tarjan_visit(
+/// Numbers `node` and puts it on the component stack.
+fn enter(state: Tarjan, node: String) -> Tarjan {
+  Tarjan(
+    ..state,
+    next: state.next + 1,
+    index: dict.insert(state.index, node, state.next),
+    low: dict.insert(state.low, node, state.next),
+    stack: [node, ..state.stack],
+    on_stack: set.insert(state.on_stack, node),
+  )
+}
+
+/// Each frame is a node and the edges of it still to follow.
+fn walk(
   state: Tarjan,
-  node: String,
+  frames: List(#(String, List(String))),
   edges: fn(String) -> List(String),
 ) -> Tarjan {
-  let state =
-    Tarjan(
-      ..state,
-      next: state.next + 1,
-      index: dict.insert(state.index, node, state.next),
-      low: dict.insert(state.low, node, state.next),
-      stack: [node, ..state.stack],
-      on_stack: set.insert(state.on_stack, node),
-    )
-  let state =
-    list.fold(edges(node), state, fn(state, next) {
+  case frames {
+    [] -> state
+    [#(node, [next, ..rest]), ..outer] ->
       case dict.get(state.index, next) {
-        Error(_) -> {
-          let state = tarjan_visit(state, next, edges)
-          lower(state, node, get(state.low, next))
-        }
-        Ok(next_index) ->
-          case set.contains(state.on_stack, next) {
+        Error(_) ->
+          walk(
+            enter(state, next),
+            [#(next, edges(next)), #(node, rest), ..outer],
+            edges,
+          )
+        Ok(next_index) -> {
+          let state = case set.contains(state.on_stack, next) {
             True -> lower(state, node, next_index)
             False -> state
           }
+          walk(state, [#(node, rest), ..outer], edges)
+        }
       }
-    })
-  case get(state.low, node) == get(state.index, node) {
-    False -> state
-    True -> {
-      let #(component, rest) = pop_until(state.stack, node, [])
-      Tarjan(
-        ..state,
-        stack: rest,
-        on_stack: list.fold(component, state.on_stack, set.delete),
-        components: [component, ..state.components],
-      )
+    [#(node, []), ..outer] -> {
+      let state = case get(state.low, node) == get(state.index, node) {
+        False -> state
+        True -> {
+          let #(component, rest) = pop_until(state.stack, node, [])
+          Tarjan(
+            ..state,
+            stack: rest,
+            on_stack: list.fold(component, state.on_stack, set.delete),
+            components: [component, ..state.components],
+          )
+        }
+      }
+      // The node is done; its parent's low link takes its own into account.
+      let state = case outer {
+        [#(parent, _), ..] -> lower(state, parent, get(state.low, node))
+        [] -> state
+      }
+      walk(state, outer, edges)
     }
   }
 }
