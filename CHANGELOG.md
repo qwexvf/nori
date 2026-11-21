@@ -47,6 +47,17 @@
 - OpenAPI 3.0.4 and 3.1.2 documents are accepted. A document that fails to
   decode now says where (`expected ..., found ... at openapi`).
 
+### Performance
+
+- Generating from Cloudflare's spec (30 MB, about a million lines of Gleam)
+  takes 9.5s instead of 35s, without `gleam format`; the output is unchanged.
+  Decoding skips the optional keywords a schema does not set and converts only
+  `x-` keys to extensions; a schema rename rewrites `$ref`s in place instead of
+  re-encoding and re-decoding the document; ASCII names are converted byte by
+  byte.
+- A spec that fails to decode is reported at the field that is wrong: an
+  invalid inline value used to be reported as a missing `$ref`.
+
 ### Fixed
 
 Found by generating from the Kubernetes, Stripe, GitHub, Cloudflare, Twilio,

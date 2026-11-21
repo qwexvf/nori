@@ -13,9 +13,7 @@ import gleam/string
 import nori/codegen/ir
 import nori/codegen/naming
 import nori/components
-import nori/decoder
 import nori/document.{type Document}
-import nori/encoder
 import nori/operation.{type Operation, type PathItem}
 import nori/parameter.{type Parameter}
 import nori/paths
@@ -23,6 +21,7 @@ import nori/reference
 import nori/request_body.{type RequestBody}
 import nori/response.{type Response}
 import nori/schema.{type Schema}
+import nori/schema_refs
 import nori/security
 
 /// Choices that change the shape of the generated types. The defaults keep the
@@ -87,12 +86,7 @@ pub fn build_with(doc: Document, options: BuildOptions) -> ir.CodegenIR {
 /// Two component schemas whose names differ only in what `to_type_name` drops
 /// (`Fields` and `fields` in Jira's spec) would define one type twice. The
 /// later one, in sorted order, is renamed to a free name and every `$ref` to
-/// it rewritten.
-///
-/// References are spread over every part of the document, so they are
-/// rewritten in its JSON form, where each is a quoted string starting with
-/// `"#/components/schemas/`, instead of with a walker per object type. Only a
-/// colliding spec pays for the re-encode.
+/// it, and every discriminator mapping naming it, is rewritten.
 fn rename_colliding_schemas(doc: Document) -> Document {
   let renames = case doc.components {
     option.Some(c) -> colliding_renames(c.schemas)
@@ -101,35 +95,32 @@ fn rename_colliding_schemas(doc: Document) -> Document {
   case dict.is_empty(renames) {
     True -> doc
     False -> {
-      let source =
-        dict.fold(
-          renames,
-          json.to_string(encoder.encode_document(doc)),
-          fn(source, old, new) {
-            source
-            |> string.replace(ref_prefix(old) <> "\"", ref_prefix(new) <> "\"")
-            |> string.replace(ref_prefix(old) <> "/", ref_prefix(new) <> "/")
-          },
-        )
-      case json.parse(source, decoder.document_decoder()) {
-        Ok(renamed) ->
-          document.Document(
-            ..renamed,
-            components: option.map(renamed.components, fn(c) {
-              components.Components(
-                ..c,
-                schemas: c.schemas
-                  |> rename_keys(renames)
-                  |> dict.map_values(fn(_, s) { rename_mapping(s, renames) }),
-              )
-            }),
-          )
-        // The encoder and decoder are each other's inverse, so this is not
-        // expected. If it happens, the spec is used as written: the duplicate
-        // type then fails to compile, which names the schemas involved.
-        Error(_) -> doc
+      let renamed = schema_refs.map_document(doc, renamed_target(_, renames))
+      document.Document(
+        ..renamed,
+        components: option.map(renamed.components, fn(c) {
+          components.Components(..c, schemas: rename_keys(c.schemas, renames))
+        }),
+      )
+    }
+  }
+}
+
+/// `target` (a `$ref`, or a bare schema name in a discriminator mapping) after
+/// the renames.
+fn renamed_target(target: String, renames: dict.Dict(String, String)) -> String {
+  case string.split_once(target, "#/components/schemas/") {
+    Ok(#("", pointer)) -> {
+      let #(segment, rest) = case string.split_once(pointer, "/") {
+        Ok(#(segment, rest)) -> #(segment, "/" <> rest)
+        Error(_) -> #(pointer, "")
+      }
+      case dict.get(renames, unescape_pointer(segment)) {
+        Ok(new) -> schema_ref(new) <> rest
+        Error(_) -> target
       }
     }
+    _ -> result.unwrap(dict.get(renames, target), target)
   }
 }
 
@@ -157,33 +148,6 @@ fn colliding_renames(
       }
     })
   renames
-}
-
-/// The start of a JSON-encoded `$ref` to component schema `name`.
-fn ref_prefix(name: String) -> String {
-  "\"" <> schema_ref(name)
-}
-
-/// A discriminator `mapping` may name its target bare (`x: fields`) instead of
-/// with a `$ref`, which the rewrite of `$ref` strings does not reach.
-fn rename_mapping(s: Schema, renames: dict.Dict(String, String)) -> Schema {
-  case s.discriminator {
-    option.Some(schema.Discriminator(mapping: option.Some(mapping), ..) as d) ->
-      schema.Schema(
-        ..s,
-        discriminator: option.Some(
-          schema.Discriminator(
-            ..d,
-            mapping: option.Some(
-              dict.map_values(mapping, fn(_, target) {
-                result.unwrap(dict.get(renames, target), target)
-              }),
-            ),
-          ),
-        ),
-      )
-    _ -> s
-  }
 }
 
 fn rename_keys(

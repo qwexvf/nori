@@ -2,6 +2,7 @@
 ////
 //// Uses `gleam/dynamic/decode` for composable decoding.
 
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode.{type DecodeError, type Decoder}
@@ -9,7 +10,6 @@ import gleam/int
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/string
 import nori/components.{type Components, Components}
 import nori/document.{type Document, Document}
 import nori/info.{type Contact, type Info, type License, Contact, Info, License}
@@ -269,69 +269,82 @@ fn path_item_or_ref_decoder() -> Decoder(Ref(PathItem)) {
 
 /// Decoder for PathItem objects.
 fn path_item_decoder() -> Decoder(PathItem) {
-  use ref <- decode.optional_field("$ref", None, option_decoder(decode.string))
-  use summary <- decode.optional_field(
+  use fields <- decode.then(object_fields())
+  use ref <- optional_field(fields, "$ref", None, option_decoder(decode.string))
+  use summary <- optional_field(
+    fields,
     "summary",
     None,
     option_decoder(decode.string),
   )
-  use description <- decode.optional_field(
+  use description <- optional_field(
+    fields,
     "description",
     None,
     option_decoder(decode.string),
   )
-  use get <- decode.optional_field(
+  use get <- optional_field(
+    fields,
     "get",
     None,
     option_decoder(operation_decoder()),
   )
-  use put <- decode.optional_field(
+  use put <- optional_field(
+    fields,
     "put",
     None,
     option_decoder(operation_decoder()),
   )
-  use post <- decode.optional_field(
+  use post <- optional_field(
+    fields,
     "post",
     None,
     option_decoder(operation_decoder()),
   )
-  use delete <- decode.optional_field(
+  use delete <- optional_field(
+    fields,
     "delete",
     None,
     option_decoder(operation_decoder()),
   )
-  use options <- decode.optional_field(
+  use options <- optional_field(
+    fields,
     "options",
     None,
     option_decoder(operation_decoder()),
   )
-  use head <- decode.optional_field(
+  use head <- optional_field(
+    fields,
     "head",
     None,
     option_decoder(operation_decoder()),
   )
-  use patch <- decode.optional_field(
+  use patch <- optional_field(
+    fields,
     "patch",
     None,
     option_decoder(operation_decoder()),
   )
-  use trace <- decode.optional_field(
+  use trace <- optional_field(
+    fields,
     "trace",
     None,
     option_decoder(operation_decoder()),
   )
-  use servers <- decode.optional_field(
+  use servers <- optional_field(
+    fields,
     "servers",
     [],
     decode.list(server_decoder()),
   )
-  use parameters <- decode.optional_field(
+  use parameters <- optional_field(
+    fields,
     "parameters",
     [],
     decode.list(parameter_or_ref_decoder()),
   )
 
-  use extensions <- decode.subfield([], extensions_decoder())
+  use extensions <- with_extensions(fields)
   decode.success(PathItem(
     ref: ref,
     summary: summary,
@@ -352,48 +365,58 @@ fn path_item_decoder() -> Decoder(PathItem) {
 
 /// Decoder for Operation objects.
 fn operation_decoder() -> Decoder(Operation) {
-  use tags <- decode.optional_field("tags", [], decode.list(decode.string))
-  use summary <- decode.optional_field(
+  use fields <- decode.then(object_fields())
+  use tags <- optional_field(fields, "tags", [], decode.list(decode.string))
+  use summary <- optional_field(
+    fields,
     "summary",
     None,
     option_decoder(decode.string),
   )
-  use description <- decode.optional_field(
+  use description <- optional_field(
+    fields,
     "description",
     None,
     option_decoder(decode.string),
   )
-  use external_docs <- decode.optional_field(
+  use external_docs <- optional_field(
+    fields,
     "externalDocs",
     None,
     option_decoder(external_docs_decoder()),
   )
-  use operation_id <- decode.optional_field(
+  use operation_id <- optional_field(
+    fields,
     "operationId",
     None,
     option_decoder(decode.string),
   )
-  use parameters <- decode.optional_field(
+  use parameters <- optional_field(
+    fields,
     "parameters",
     [],
     decode.list(parameter_or_ref_decoder()),
   )
-  use request_body <- decode.optional_field(
+  use request_body <- optional_field(
+    fields,
     "requestBody",
     None,
     option_decoder(request_body_or_ref_decoder()),
   )
-  use responses <- decode.optional_field(
+  use responses <- optional_field(
+    fields,
     "responses",
     dict.new(),
     decode.dict(decode.string, response_or_ref_decoder()),
   )
-  use callbacks <- decode.optional_field(
+  use callbacks <- optional_field(
+    fields,
     "callbacks",
     dict.new(),
     decode.dict(decode.string, callback_or_ref_decoder()),
   )
-  use deprecated <- decode.optional_field(
+  use deprecated <- optional_field(
+    fields,
     "deprecated",
     None,
     option_decoder(decode.bool),
@@ -402,18 +425,20 @@ fn operation_decoder() -> Decoder(Operation) {
   // is how OpenAPI marks it public when the document has global security, so an
   // empty list has to stay distinguishable from an absent field. Collapsing both
   // to None made every route require auth.
-  use security <- decode.optional_field(
+  use security <- optional_field(
+    fields,
     "security",
     None,
     decode.list(security_requirement_decoder()) |> decode.map(Some),
   )
-  use servers <- decode.optional_field(
+  use servers <- optional_field(
+    fields,
     "servers",
     [],
     decode.list(server_decoder()),
   )
 
-  use extensions <- decode.subfield([], extensions_decoder())
+  use extensions <- with_extensions(fields)
   decode.success(Operation(
     tags: tags,
     summary: summary,
@@ -438,65 +463,77 @@ fn parameter_or_ref_decoder() -> Decoder(Ref(Parameter)) {
 
 /// Decoder for Parameter objects.
 fn parameter_decoder() -> Decoder(Parameter) {
+  use fields <- decode.then(object_fields())
   use name <- decode.field("name", decode.string)
   use in_ <- decode.field("in", parameter_location_decoder())
-  use description <- decode.optional_field(
+  use description <- optional_field(
+    fields,
     "description",
     None,
     option_decoder(decode.string),
   )
-  use required <- decode.optional_field(
+  use required <- optional_field(
+    fields,
     "required",
     None,
     option_decoder(decode.bool),
   )
-  use deprecated <- decode.optional_field(
+  use deprecated <- optional_field(
+    fields,
     "deprecated",
     None,
     option_decoder(decode.bool),
   )
-  use allow_empty_value <- decode.optional_field(
+  use allow_empty_value <- optional_field(
+    fields,
     "allowEmptyValue",
     None,
     option_decoder(decode.bool),
   )
-  use style <- decode.optional_field(
+  use style <- optional_field(
+    fields,
     "style",
     None,
     option_decoder(parameter_style_decoder()),
   )
-  use explode <- decode.optional_field(
+  use explode <- optional_field(
+    fields,
     "explode",
     None,
     option_decoder(decode.bool),
   )
-  use allow_reserved <- decode.optional_field(
+  use allow_reserved <- optional_field(
+    fields,
     "allowReserved",
     None,
     option_decoder(decode.bool),
   )
-  use schema <- decode.optional_field(
+  use schema <- optional_field(
+    fields,
     "schema",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
-  use example <- decode.optional_field(
+  use example <- optional_field(
+    fields,
     "example",
     None,
     option_decoder(json_decoder()),
   )
-  use examples <- decode.optional_field(
+  use examples <- optional_field(
+    fields,
     "examples",
     None,
     option_decoder(decode.dict(decode.string, example_or_ref_decoder())),
   )
-  use content <- decode.optional_field(
+  use content <- optional_field(
+    fields,
     "content",
     None,
     option_decoder(decode.dict(decode.string, media_type_decoder())),
   )
 
-  use extensions <- decode.subfield([], extensions_decoder())
+  use extensions <- with_extensions(fields)
   decode.success(Parameter(
     name: name,
     in_: in_,
@@ -545,311 +582,370 @@ fn schema_or_ref_decoder() -> Decoder(Ref(Schema)) {
 
 /// Decoder for Schema objects.
 pub fn schema_decoder() -> Decoder(Schema) {
+  use fields <- decode.then(object_fields())
   // Core vocabulary
-  use schema_uri <- decode.optional_field(
+  use schema_uri <- optional_field(
+    fields,
     "$schema",
     None,
     option_decoder(decode.string),
   )
-  use vocabulary <- decode.optional_field(
+  use vocabulary <- optional_field(
+    fields,
     "$vocabulary",
     None,
     option_decoder(decode.dict(decode.string, decode.bool)),
   )
-  use id <- decode.optional_field("$id", None, option_decoder(decode.string))
-  use anchor <- decode.optional_field(
+  use id <- optional_field(fields, "$id", None, option_decoder(decode.string))
+  use anchor <- optional_field(
+    fields,
     "$anchor",
     None,
     option_decoder(decode.string),
   )
-  use dynamic_anchor <- decode.optional_field(
+  use dynamic_anchor <- optional_field(
+    fields,
     "$dynamicAnchor",
     None,
     option_decoder(decode.string),
   )
-  use ref <- decode.optional_field("$ref", None, option_decoder(decode.string))
-  use dynamic_ref <- decode.optional_field(
+  use ref <- optional_field(fields, "$ref", None, option_decoder(decode.string))
+  use dynamic_ref <- optional_field(
+    fields,
     "$dynamicRef",
     None,
     option_decoder(decode.string),
   )
-  use defs <- decode.optional_field(
+  use defs <- optional_field(
+    fields,
     "$defs",
     None,
     option_decoder(decode.dict(decode.string, schema_decoder())),
   )
-  use comment <- decode.optional_field(
+  use comment <- optional_field(
+    fields,
     "$comment",
     None,
     option_decoder(decode.string),
   )
   // Applicator vocabulary
-  use all_of <- decode.optional_field(
+  use all_of <- optional_field(
+    fields,
     "allOf",
     [],
     decode.list(schema_or_ref_decoder()),
   )
-  use any_of <- decode.optional_field(
+  use any_of <- optional_field(
+    fields,
     "anyOf",
     [],
     decode.list(schema_or_ref_decoder()),
   )
-  use one_of <- decode.optional_field(
+  use one_of <- optional_field(
+    fields,
     "oneOf",
     [],
     decode.list(schema_or_ref_decoder()),
   )
-  use not <- decode.optional_field(
+  use not <- optional_field(
+    fields,
     "not",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
-  use if_schema <- decode.optional_field(
+  use if_schema <- optional_field(
+    fields,
     "if",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
-  use then_schema <- decode.optional_field(
+  use then_schema <- optional_field(
+    fields,
     "then",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
-  use else_schema <- decode.optional_field(
+  use else_schema <- optional_field(
+    fields,
     "else",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
-  use dependent_schemas <- decode.optional_field(
+  use dependent_schemas <- optional_field(
+    fields,
     "dependentSchemas",
     None,
     option_decoder(decode.dict(decode.string, schema_or_ref_decoder())),
   )
-  use prefix_items <- decode.optional_field(
+  use prefix_items <- optional_field(
+    fields,
     "prefixItems",
     [],
     decode.list(schema_or_ref_decoder()),
   )
-  use items <- decode.optional_field(
+  use items <- optional_field(
+    fields,
     "items",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
-  use contains <- decode.optional_field(
+  use contains <- optional_field(
+    fields,
     "contains",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
-  use properties <- decode.optional_field(
+  use properties <- optional_field(
+    fields,
     "properties",
     dict.new(),
     decode.dict(decode.string, schema_or_ref_decoder()),
   )
-  use pattern_properties <- decode.optional_field(
+  use pattern_properties <- optional_field(
+    fields,
     "patternProperties",
     None,
     option_decoder(decode.dict(decode.string, schema_or_ref_decoder())),
   )
-  use additional_properties <- decode.optional_field(
+  use additional_properties <- optional_field(
+    fields,
     "additionalProperties",
     None,
     option_decoder(additional_properties_decoder()),
   )
-  use property_names <- decode.optional_field(
+  use property_names <- optional_field(
+    fields,
     "propertyNames",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
-  use unevaluated_items <- decode.optional_field(
+  use unevaluated_items <- optional_field(
+    fields,
     "unevaluatedItems",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
-  use unevaluated_properties <- decode.optional_field(
+  use unevaluated_properties <- optional_field(
+    fields,
     "unevaluatedProperties",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
   // Validation vocabulary - type
-  use schema_type <- decode.optional_field(
+  use schema_type <- optional_field(
+    fields,
     "type",
     None,
     option_decoder(schema_type_decoder()),
   )
-  use const_value <- decode.optional_field(
+  use const_value <- optional_field(
+    fields,
     "const",
     None,
     option_decoder(json_decoder()),
   )
-  use enum_values <- decode.optional_field(
+  use enum_values <- optional_field(
+    fields,
     "enum",
     None,
     option_decoder(decode.list(json_decoder())),
   )
   // Validation vocabulary - numeric
-  use multiple_of <- decode.optional_field(
+  use multiple_of <- optional_field(
+    fields,
     "multipleOf",
     None,
     option_decoder(number_decoder()),
   )
-  use maximum <- decode.optional_field(
+  use maximum <- optional_field(
+    fields,
     "maximum",
     None,
     option_decoder(number_decoder()),
   )
-  use exclusive_maximum <- decode.optional_field(
+  use exclusive_maximum <- optional_field(
+    fields,
     "exclusiveMaximum",
     None,
     exclusive_bound_decoder(),
   )
-  use minimum <- decode.optional_field(
+  use minimum <- optional_field(
+    fields,
     "minimum",
     None,
     option_decoder(number_decoder()),
   )
-  use exclusive_minimum <- decode.optional_field(
+  use exclusive_minimum <- optional_field(
+    fields,
     "exclusiveMinimum",
     None,
     exclusive_bound_decoder(),
   )
   // Validation vocabulary - string
-  use max_length <- decode.optional_field(
+  use max_length <- optional_field(
+    fields,
     "maxLength",
     None,
     option_decoder(decode.int),
   )
-  use min_length <- decode.optional_field(
+  use min_length <- optional_field(
+    fields,
     "minLength",
     None,
     option_decoder(decode.int),
   )
-  use pattern <- decode.optional_field(
+  use pattern <- optional_field(
+    fields,
     "pattern",
     None,
     option_decoder(decode.string),
   )
   // Validation vocabulary - array
-  use max_items <- decode.optional_field(
+  use max_items <- optional_field(
+    fields,
     "maxItems",
     None,
     option_decoder(decode.int),
   )
-  use min_items <- decode.optional_field(
+  use min_items <- optional_field(
+    fields,
     "minItems",
     None,
     option_decoder(decode.int),
   )
-  use unique_items <- decode.optional_field(
+  use unique_items <- optional_field(
+    fields,
     "uniqueItems",
     None,
     option_decoder(decode.bool),
   )
-  use max_contains <- decode.optional_field(
+  use max_contains <- optional_field(
+    fields,
     "maxContains",
     None,
     option_decoder(decode.int),
   )
-  use min_contains <- decode.optional_field(
+  use min_contains <- optional_field(
+    fields,
     "minContains",
     None,
     option_decoder(decode.int),
   )
   // Validation vocabulary - object
-  use max_properties <- decode.optional_field(
+  use max_properties <- optional_field(
+    fields,
     "maxProperties",
     None,
     option_decoder(decode.int),
   )
-  use min_properties <- decode.optional_field(
+  use min_properties <- optional_field(
+    fields,
     "minProperties",
     None,
     option_decoder(decode.int),
   )
-  use required <- decode.optional_field(
+  use required <- optional_field(
+    fields,
     "required",
     [],
     decode.list(decode.string),
   )
-  use dependent_required <- decode.optional_field(
+  use dependent_required <- optional_field(
+    fields,
     "dependentRequired",
     None,
     option_decoder(decode.dict(decode.string, decode.list(decode.string))),
   )
   // Format vocabulary
-  use format <- decode.optional_field(
+  use format <- optional_field(
+    fields,
     "format",
     None,
     option_decoder(decode.string),
   )
   // Content vocabulary
-  use content_encoding <- decode.optional_field(
+  use content_encoding <- optional_field(
+    fields,
     "contentEncoding",
     None,
     option_decoder(decode.string),
   )
-  use content_media_type <- decode.optional_field(
+  use content_media_type <- optional_field(
+    fields,
     "contentMediaType",
     None,
     option_decoder(decode.string),
   )
-  use content_schema <- decode.optional_field(
+  use content_schema <- optional_field(
+    fields,
     "contentSchema",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
   // Meta-data vocabulary
-  use title <- decode.optional_field(
+  use title <- optional_field(
+    fields,
     "title",
     None,
     option_decoder(decode.string),
   )
-  use description <- decode.optional_field(
+  use description <- optional_field(
+    fields,
     "description",
     None,
     option_decoder(decode.string),
   )
-  use default <- decode.optional_field(
+  use default <- optional_field(
+    fields,
     "default",
     None,
     option_decoder(json_decoder()),
   )
-  use deprecated <- decode.optional_field(
+  use deprecated <- optional_field(
+    fields,
     "deprecated",
     None,
     option_decoder(decode.bool),
   )
-  use read_only <- decode.optional_field(
+  use read_only <- optional_field(
+    fields,
     "readOnly",
     None,
     option_decoder(decode.bool),
   )
-  use write_only <- decode.optional_field(
+  use write_only <- optional_field(
+    fields,
     "writeOnly",
     None,
     option_decoder(decode.bool),
   )
-  use examples <- decode.optional_field(
+  use examples <- optional_field(
+    fields,
     "examples",
     None,
     option_decoder(decode.list(json_decoder())),
   )
   // OpenAPI extensions
-  use discriminator <- decode.optional_field(
+  use discriminator <- optional_field(
+    fields,
     "discriminator",
     None,
     option_decoder(discriminator_decoder()),
   )
-  use xml <- decode.optional_field("xml", None, option_decoder(xml_decoder()))
-  use external_docs <- decode.optional_field(
+  use xml <- optional_field(fields, "xml", None, option_decoder(xml_decoder()))
+  use external_docs <- optional_field(
+    fields,
     "externalDocs",
     None,
     option_decoder(external_documentation_decoder()),
   )
-  use example <- decode.optional_field(
+  use example <- optional_field(
+    fields,
     "example",
     None,
     option_decoder(json_decoder()),
   )
-  use extensions <- decode.subfield([], extensions_decoder())
+  use extensions <- with_extensions(fields)
 
   decode.success(Schema(
     schema: schema_uri,
@@ -1077,28 +1173,33 @@ fn request_body_decoder() -> Decoder(RequestBody) {
 
 /// Decoder for MediaType objects.
 fn media_type_decoder() -> Decoder(MediaType) {
-  use schema <- decode.optional_field(
+  use fields <- decode.then(object_fields())
+  use schema <- optional_field(
+    fields,
     "schema",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
-  use example <- decode.optional_field(
+  use example <- optional_field(
+    fields,
     "example",
     None,
     option_decoder(json_decoder()),
   )
-  use examples <- decode.optional_field(
+  use examples <- optional_field(
+    fields,
     "examples",
     None,
     option_decoder(decode.dict(decode.string, example_or_ref_decoder())),
   )
-  use encoding <- decode.optional_field(
+  use encoding <- optional_field(
+    fields,
     "encoding",
     None,
     option_decoder(decode.dict(decode.string, encoding_decoder())),
   )
 
-  use extensions <- decode.subfield([], extensions_decoder())
+  use extensions <- with_extensions(fields)
   decode.success(MediaType(
     schema: schema,
     example: example,
@@ -1192,28 +1293,33 @@ fn header_or_ref_decoder() -> Decoder(Ref(Header)) {
 
 /// Decoder for Header objects.
 fn header_decoder() -> Decoder(Header) {
-  use description <- decode.optional_field(
+  use fields <- decode.then(object_fields())
+  use description <- optional_field(
+    fields,
     "description",
     None,
     option_decoder(decode.string),
   )
-  use required <- decode.optional_field(
+  use required <- optional_field(
+    fields,
     "required",
     None,
     option_decoder(decode.bool),
   )
-  use deprecated <- decode.optional_field(
+  use deprecated <- optional_field(
+    fields,
     "deprecated",
     None,
     option_decoder(decode.bool),
   )
-  use schema <- decode.optional_field(
+  use schema <- optional_field(
+    fields,
     "schema",
     None,
     option_decoder(schema_or_ref_decoder()),
   )
 
-  use extensions <- decode.subfield([], extensions_decoder())
+  use extensions <- with_extensions(fields)
   decode.success(Header(
     description: description,
     required: required,
@@ -1237,24 +1343,28 @@ fn response_or_ref_decoder() -> Decoder(Ref(Response)) {
 
 /// Decoder for Response objects.
 fn response_decoder() -> Decoder(Response) {
+  use fields <- decode.then(object_fields())
   use description <- decode.field("description", decode.string)
-  use headers <- decode.optional_field(
+  use headers <- optional_field(
+    fields,
     "headers",
     dict.new(),
     decode.dict(decode.string, header_or_ref_decoder()),
   )
-  use content <- decode.optional_field(
+  use content <- optional_field(
+    fields,
     "content",
     dict.new(),
     decode.dict(decode.string, media_type_decoder()),
   )
-  use links <- decode.optional_field(
+  use links <- optional_field(
+    fields,
     "links",
     dict.new(),
     decode.dict(decode.string, link_or_ref_decoder()),
   )
 
-  use extensions <- decode.subfield([], extensions_decoder())
+  use extensions <- with_extensions(fields)
   decode.success(Response(
     description: description,
     headers: headers,
@@ -1623,22 +1733,95 @@ fn tag_decoder() -> Decoder(Tag) {
 // Helper functions
 
 /// Decoder that extracts extension fields (keys starting with "x-") from an object.
+///
+/// Every object in a spec runs this, so it picks out the `x-` keys before
+/// converting any value: converting the whole object first made decoding cost
+/// grow with the depth of each subtree (Cloudflare's spec took ten seconds).
+///
+/// Keys are read as bytes and only an `x-` key is checked as UTF-8: on Erlang
+/// `decode.string` scans every byte of every key of every object.
 fn extensions_decoder() -> Decoder(Dict(String, Json)) {
-  decode.dict(decode.string, json_decoder())
-  |> decode.map(fn(all_fields) {
-    dict.filter(all_fields, fn(key, _val) { string.starts_with(key, "x-") })
+  decode.map(decode.dict(key_bytes_decoder(), decode.dynamic), extensions_of)
+}
+
+fn extensions_of(fields: Dict(BitArray, Dynamic)) -> Dict(String, Json) {
+  dict.fold(fields, dict.new(), fn(acc, key, value) {
+    case key {
+      <<"x-":utf8, _:bits>> ->
+        case bit_array.to_string(key) {
+          Ok(name) -> dict.insert(acc, name, dynamic_to_json(value))
+          Error(_) -> acc
+        }
+      _ -> acc
+    }
   })
 }
 
-/// Decoder for reference or inline value.
-fn ref_or_value_decoder(value_decoder: Decoder(a)) -> Decoder(Ref(a)) {
+/// An object's fields, read once. A schema decoder asks for 61 optional
+/// keywords and a schema sets a handful; `decode.optional_field` converts its
+/// key back to a string even when the key is absent, which was most of the
+/// time spent decoding Cloudflare's spec. `None` when the value is not an
+/// object, so the field decoders report the error as they always have.
+fn object_fields() -> Decoder(Option(Dict(BitArray, Dynamic))) {
   decode.one_of(
-    {
-      use ref_str <- decode.field("$ref", decode.string)
-      decode.success(reference.Reference(ref_str))
-    },
-    [decode.map(value_decoder, reference.Inline)],
+    decode.map(decode.dict(key_bytes_decoder(), decode.dynamic), Some),
+    [decode.success(None)],
   )
+}
+
+/// `decode.optional_field`, skipped for a key the object does not have. For
+/// an absent key `decode.optional_field` decodes to `next(default)` with no
+/// errors, so the result is the same.
+fn optional_field(
+  fields: Option(Dict(BitArray, Dynamic)),
+  key: String,
+  default: a,
+  field_decoder: Decoder(a),
+  next: fn(a) -> Decoder(b),
+) -> Decoder(b) {
+  case fields {
+    Some(present) ->
+      case dict.has_key(present, bit_array.from_string(key)) {
+        True -> decode.optional_field(key, default, field_decoder, next)
+        False -> next(default)
+      }
+    None -> decode.optional_field(key, default, field_decoder, next)
+  }
+}
+
+/// The `x-` fields, from `fields` when the object was read already.
+fn with_extensions(
+  fields: Option(Dict(BitArray, Dynamic)),
+  next: fn(Dict(String, Json)) -> Decoder(b),
+) -> Decoder(b) {
+  case fields {
+    Some(present) -> next(extensions_of(present))
+    None -> decode.subfield([], extensions_decoder(), next)
+  }
+}
+
+/// An object key as bytes. Erlang keys are binaries already; JavaScript keys
+/// are strings and take the second branch.
+fn key_bytes_decoder() -> Decoder(BitArray) {
+  decode.one_of(decode.bit_array, [
+    decode.map(decode.string, bit_array.from_string),
+  ])
+}
+
+/// Decoder for reference or inline value.
+///
+/// Reads `$ref` as an optional field rather than trying it with `one_of`: on
+/// an inline value the failed attempt built an error path that was thrown away.
+fn ref_or_value_decoder(value_decoder: Decoder(a)) -> Decoder(Ref(a)) {
+  use ref <- decode.optional_field(
+    "$ref",
+    None,
+    decode.map(decode.string, Some),
+  )
+  case ref {
+    Some(ref_str) -> decode.success(reference.Reference(ref_str))
+    None -> decode.map(value_decoder, reference.Inline)
+  }
 }
 
 /// Decoder for any JSON value.
