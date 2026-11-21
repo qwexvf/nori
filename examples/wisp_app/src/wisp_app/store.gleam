@@ -2,15 +2,18 @@
 ////
 //// Simple storage for the example app. In production, replace with a database.
 
+import generated/types.{type Todo, type UpdateTodoRequest, Todo}
 import gleam/dynamic
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import generated/types.{type Todo, type UpdateTodoRequest, Todo}
 
 // ETS FFI
 @external(erlang, "ets", "insert")
-fn ets_insert(table: dynamic.Dynamic, record: #(String, Todo)) -> dynamic.Dynamic
+fn ets_insert(
+  table: dynamic.Dynamic,
+  record: #(String, Todo),
+) -> dynamic.Dynamic
 
 @external(erlang, "ets", "lookup")
 fn ets_lookup(table: dynamic.Dynamic, key: String) -> List(#(String, Todo))
@@ -60,7 +63,8 @@ pub fn list_todos() -> List(Todo) {
 /// Create a new todo.
 pub fn create_todo(title: String, description: Option(String)) -> Todo {
   let id = next_id()
-  let item = Todo(id: id, title: title, completed: False, description: description)
+  let item =
+    Todo(id: id, title: title, completed: False, description: description)
   ets_insert(table(), #(id, item))
   item
 }

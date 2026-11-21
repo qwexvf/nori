@@ -45,6 +45,10 @@ export interface Post {
 export type PostStatus = "draft" | "published" | "archived";
 
 export interface UpdateUserRequest {
+  bio?: string;
+  email: string;
+  password: string;
+  username: string;
   avatar_url?: string | null;
 }
 

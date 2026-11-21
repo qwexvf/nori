@@ -1,49 +1,38 @@
 //// Generated from Petstore API v1.0.0
 
-import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
 import gleam/option.{type Option, None, Some}
 
 pub type CreatePetRequest {
-  CreatePetRequest(
-    name: String,
-    tag: Option(String),
-  )
+  CreatePetRequest(name: String, tag: Option(String))
 }
 
 pub type Error {
-  Error(
-    code: Int,
-    message: String,
-  )
+  Error(code: Int, message: String)
 }
 
 pub type Pet {
-  Pet(
-    id: Int,
-    name: String,
-    tag: Option(String),
-  )
+  Pet(id: Int, name: String, tag: Option(String))
 }
 
 pub fn create_pet_request_decoder() -> Decoder(CreatePetRequest) {
   use name <- decode.field("name", decode.string)
   use tag <- decode.optional_field("tag", None, decode.optional(decode.string))
-  decode.success(CreatePetRequest(name: name, tag: tag))
+  decode.success(CreatePetRequest(name:, tag:))
 }
 
 pub fn error_decoder() -> Decoder(Error) {
   use code <- decode.field("code", decode.int)
   use message <- decode.field("message", decode.string)
-  decode.success(Error(code: code, message: message))
+  decode.success(Error(code:, message:))
 }
 
 pub fn pet_decoder() -> Decoder(Pet) {
   use id <- decode.field("id", decode.int)
   use name <- decode.field("name", decode.string)
   use tag <- decode.optional_field("tag", None, decode.optional(decode.string))
-  decode.success(Pet(id: id, name: name, tag: tag))
+  decode.success(Pet(id:, name:, tag:))
 }
 
 pub fn encode_create_pet_request(value: CreatePetRequest) -> Json {

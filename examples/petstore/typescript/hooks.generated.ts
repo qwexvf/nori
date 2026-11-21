@@ -21,7 +21,7 @@ export function useCreatePet() {
 /** List all pets */
 export function useListPets(params: { limit?: number }) {
   return useQuery<Array<Pet>>({
-    queryKey: ["listPets"],
+    queryKey: ["listPets", params],
     queryFn: () => listPets(params),
   });
 }

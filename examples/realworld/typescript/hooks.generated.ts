@@ -35,7 +35,7 @@ export function useCreatePost() {
 /** List all posts */
 export function useListPosts(params: { page?: number; per_page?: number; sort?: string; status?: PostStatus }) {
   return useQuery<Array<Post>>({
-    queryKey: ["listPosts"],
+    queryKey: ["listPosts", params],
     queryFn: () => listPosts(params),
   });
 }
@@ -72,7 +72,7 @@ export function useCreateComment() {
 /** List comments on a post */
 export function useListComments(postId: string, params: { page?: number; per_page?: number }) {
   return useQuery<Array<Comment>>({
-    queryKey: ["listComments", postId],
+    queryKey: ["listComments", postId, params],
     queryFn: () => listComments(postId, params),
   });
 }
@@ -87,7 +87,7 @@ export function useCreateUser() {
 /** List all users */
 export function useListUsers(params: { page?: number; per_page?: number; sort?: string }) {
   return useQuery<Array<User>>({
-    queryKey: ["listUsers"],
+    queryKey: ["listUsers", params],
     queryFn: () => listUsers(params),
   });
 }

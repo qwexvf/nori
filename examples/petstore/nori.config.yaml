@@ -1,0 +1,12 @@
+# Regenerate with examples/regenerate.sh, which runs nori from this directory.
+spec: ../../test/fixtures/petstore.yaml
+
+output:
+  gleam:
+    dir: ./gleam
+  typescript:
+    dir: ./typescript
+  react_query:
+    dir: ./typescript
+  swr:
+    dir: ./typescript
