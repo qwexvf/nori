@@ -13,5 +13,5 @@ github	pass	https://raw.githubusercontent.com/github/rest-api-description/c9c95f
 cloudflare	pass	https://raw.githubusercontent.com/cloudflare/api-schemas/81d3c790a5b324de180a80426e070755c9af0a3f/openapi.json
 # Not in git, so not pinned.
 jira	pass	https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json
-asana	taffy: folded scalar followed by a sibling key	https://raw.githubusercontent.com/Asana/openapi/b78c58e875915e3aa64234a2b598b95cce32c4a4/defs/asana_oas.yaml
-openai	taffy: YAML parse error	https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml
+asana	pass	https://raw.githubusercontent.com/Asana/openapi/b78c58e875915e3aa64234a2b598b95cce32c4a4/defs/asana_oas.yaml
+openai	taffy: continuation line starting with a quote	https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml

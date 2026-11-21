@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v3.0.0 - 2026-11-22
 
 ### Breaking
 
@@ -76,6 +76,10 @@
   invalid inline value used to be reported as a missing `$ref`.
 
 ### Fixed
+
+- Requires taffy 1.1.3, which parses Asana's spec: folded and empty block
+  scalars, continuation lines starting with a bracket, spaces after commas in
+  plain scalars, and `521621,621373` read as a string rather than a float.
 
 Found by generating from the Kubernetes, Stripe, GitHub, Cloudflare, Twilio,
 Box, Jira, Discord, Spotify and Swagger Petstore v3 specs and compiling the
