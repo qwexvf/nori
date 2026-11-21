@@ -1,3 +1,4 @@
+//// nori-hash: d302cdca6fe1b780de25a1169245fe73539b4e05ed1e9e50e07bbeb40ccfdf07 9238f137724d145026137b8328141e694d9d42bdd081da4d9cfa0763a541aeff
 //// Generated routes from Petstore API v1.0.0
 
 import gleam/http.{type Method, Get, Post}

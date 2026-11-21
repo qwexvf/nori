@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { Ok, Error } from "../gleam.mjs";
 
 export function halt(code) {
@@ -24,4 +25,9 @@ export function run_executable(name, args) {
   const result = spawnSync(name, args.toArray(), { encoding: "utf8" });
   if (result.error) return new Error(undefined);
   return new Ok([result.status ?? 1, (result.stdout ?? "") + (result.stderr ?? "")]);
+}
+
+// SHA-256 of a string, as lowercase hex.
+export function content_hash(content) {
+  return createHash("sha256").update(content, "utf8").digest("hex");
 }

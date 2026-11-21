@@ -1,3 +1,4 @@
+//// nori-hash: 0a548945ab80cee0864f876eee605e847deeca2a73fc4f692503692d2b73e54f 4e4fd7a8ed64526d0004740f2592720a375af5985c113cf04956d72d5a39f7b0
 //// Generated routes from RealWorld Blog API v1.0.0
 
 import gleam/http.{type Method, Delete, Get, Post, Put}

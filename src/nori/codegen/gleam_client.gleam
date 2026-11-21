@@ -84,6 +84,27 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
       <> "// import your_app/generated/types"
     prefix, _ -> "\nimport " <> prefix <> "/types"
   }
+  // A named response is parsed, and a named body encoded, with a codec from
+  // the codecs module.
+  let codecs_import = case
+    module_prefix,
+    list.any(ir.endpoints, fn(ep) {
+      let parses = case returned_ref(ep) {
+        Some(ref) -> collect_named_types(ref) != []
+        None -> False
+      }
+      let encodes = case ep.request_body {
+        Some(body) ->
+          body_encodable(body.type_ref)
+          && collect_named_types(body.type_ref) != []
+        None -> False
+      }
+      parses || encodes
+    })
+  {
+    "", _ | _, False -> ""
+    prefix, True -> "\nimport " <> prefix <> "/codecs"
+  }
 
   // Only import the HTTP method constructors actually used by request fns.
   let used_methods =
@@ -149,7 +170,7 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
   }
   let parses_json =
     list.any(ir.endpoints, fn(ep) { option.is_some(returned_ref(ep)) })
-  // A named response parses with `types.<name>_decoder()`, which does not
+  // A named response parses with `codecs.<name>_decoder()`, which does not
   // mention the decode module; any other type's decoder does.
   let needs_decode =
     list.any(ir.endpoints, fn(ep) {
@@ -234,8 +255,14 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
       title_comment,
       "",
       method_imports,
-      "import gleam/http/request.{type Request}",
-      "import gleam/http/response.{type Response}",
+      ..case ir.endpoints {
+        // The request and response types appear only in endpoint functions.
+        [] -> []
+        _ -> [
+          "import gleam/http/request.{type Request}",
+          "import gleam/http/response.{type Response}",
+        ]
+      }
     ]
     |> list.append(
       optional_imports
@@ -247,7 +274,7 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
       }),
     )
 
-  string.join(lines, "\n") <> types_import
+  string.join(lines, "\n") <> codecs_import <> types_import
 }
 
 fn collect_named_types(ref: TypeRef) -> List(String) {
@@ -941,7 +968,12 @@ fn type_ref_encoder_call(
 ) -> String {
   case ref {
     Named(name) ->
-      name_prefix <> "encode_" <> to_snake_case(name) <> "(" <> expr <> ")"
+      codecs_prefix(name_prefix)
+      <> "encode_"
+      <> to_snake_case(name)
+      <> "("
+      <> expr
+      <> ")"
     Primitive(ir.PString) -> "json.string(" <> expr <> ")"
     Primitive(ir.PInt) -> "json.int(" <> expr <> ")"
     Primitive(ir.PFloat) -> "json.float(" <> expr <> ")"
@@ -994,9 +1026,18 @@ fn body_arg_type(ref: TypeRef, name_prefix: String) -> String {
   }
 }
 
+/// Decoders and encoders live in the `codecs` module next to `types`.
+fn codecs_prefix(name_prefix: String) -> String {
+  case name_prefix {
+    "" -> ""
+    _ -> "codecs."
+  }
+}
+
 fn type_ref_decoder_call(ref: TypeRef, name_prefix: String) -> String {
   case ref {
-    Named(name) -> name_prefix <> to_snake_case(name) <> "_decoder()"
+    Named(name) ->
+      codecs_prefix(name_prefix) <> to_snake_case(name) <> "_decoder()"
     Primitive(ir.PString) -> "decode.string"
     Primitive(ir.PInt) -> "decode.int"
     Primitive(ir.PFloat) -> gleam_types.float_decoder

@@ -128,7 +128,13 @@ Mark an operation with `x-mcp` to expose it as an MCP tool as well:
 
 **Gleam** (server-side):
 
-- `types.gleam`: record types, `gleam/dynamic/decode` decoders, JSON encoders
+- `types.gleam`: record and custom types, and each enum's `to_string` and
+  `from_string`
+- `codecs.gleam`: a `gleam/dynamic/decode` decoder and a JSON encoder for each
+  type (`codecs.pet_decoder()`, `codecs.encode_pet(pet)`). Above 500 types
+  they are split into `codecs/part_N.gleam` modules that `codecs.gleam`
+  delegates to, because the Erlang compiler slows down sharply on one very
+  large module ([erlang/otp#12258](https://github.com/erlang/otp/issues/12258))
 - `routes.gleam`: a `Route` union, `match_route(method, segments)`, and a typed
   query-parameter reader for each endpoint that has query parameters
 - `client.gleam`: typed request builders

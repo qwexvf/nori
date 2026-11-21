@@ -4,6 +4,20 @@
 
 ### Breaking
 
+- Decoders and encoders moved from `types.gleam` to a `codecs.gleam` module
+  next to it: `types.pet_decoder()` is now `codecs.pet_decoder()` and
+  `types.encode_pet(pet)` is `codecs.encode_pet(pet)`. Types, constructors and
+  enum `to_string`/`from_string` stay in `types.gleam`. Above 500 types the
+  codecs are split into `codecs/part_N.gleam`, which `codecs.gleam` delegates
+  to: the Erlang compiler takes time roughly quadratic in the funs of one
+  module (erlang/otp#12258), and Cloudflare's codecs in one module took 149s
+  to compile.
+- A record nori names after an inline object, with the same fields as another
+  such record, is now a type alias of it, and its decoder and encoder call the
+  other's. Of Cloudflare's 14,655 types 9,171 were such copies. Code that uses
+  these names as types or calls their decoders and encoders still compiles;
+  constructing or matching one by its own constructor uses the record it is an
+  alias of. Records the spec names are never merged.
 - `ir.Endpoint` has a new `extensions` field holding the operation's `x-*`
   extensions. Code that builds endpoints adds `extensions: dict.new()`.
 - `ir.Field` and `ir.EndpointParam` have a new `constraints: ir.Constraints`
@@ -46,6 +60,20 @@
   error is printed as a warning. `--no-format` skips it.
 - OpenAPI 3.0.4 and 3.1.2 documents are accepted. A document that fails to
   decode now says where (`expected ..., found ... at openapi`).
+
+### Performance
+
+- Generating from Cloudflare's spec (30 MB, about a million lines of Gleam)
+  takes 9.5s instead of 35s, without `gleam format`; the output is unchanged.
+  Decoding skips the optional keywords a schema does not set and converts only
+  `x-` keys to extensions; a schema rename rewrites `$ref`s in place instead of
+  re-encoding and re-decoding the document; ASCII names are converted byte by
+  byte.
+- `generate` writes `//// nori-hash: <generated> <formatted>` as the first line
+  of each formatted Gleam file, and skips writing and formatting a file whose
+  generated text is unchanged and which was not edited since.
+- A spec that fails to decode is reported at the field that is wrong: an
+  invalid inline value used to be reported as a missing `$ref`.
 
 ### Fixed
 

@@ -13,9 +13,7 @@ import gleam/string
 import nori/codegen/ir
 import nori/codegen/naming
 import nori/components
-import nori/decoder
 import nori/document.{type Document}
-import nori/encoder
 import nori/operation.{type Operation, type PathItem}
 import nori/parameter.{type Parameter}
 import nori/paths
@@ -23,6 +21,7 @@ import nori/reference
 import nori/request_body.{type RequestBody}
 import nori/response.{type Response}
 import nori/schema.{type Schema}
+import nori/schema_refs
 import nori/security
 
 /// Choices that change the shape of the generated types. The defaults keep the
@@ -51,10 +50,14 @@ pub fn build(doc: Document) -> ir.CodegenIR {
 
 /// Builds a CodegenIR with the given options.
 pub fn build_with(doc: Document, options: BuildOptions) -> ir.CodegenIR {
-  let doc =
-    doc
-    |> rename_colliding_schemas
-    |> hoist_operation_schemas(options.inline_enums)
+  let doc = rename_colliding_schemas(doc)
+  // Types the spec names itself; every other record was named by hoisting.
+  let spec_types = case doc.components {
+    option.Some(c) ->
+      dict.keys(c.schemas) |> list.map(naming.to_type_name) |> set.from_list
+    option.None -> set.new()
+  }
+  let doc = hoist_operation_schemas(doc, options.inline_enums)
   let types =
     build_types(doc, options.inline_enums)
     |> fn(types) {
@@ -63,6 +66,7 @@ pub fn build_with(doc: Document, options: BuildOptions) -> ir.CodegenIR {
         False -> types
       }
     }
+    |> merge_hoisted_duplicates(fn(name) { !set.contains(spec_types, name) })
   let endpoints = build_endpoints(doc)
   let base_url = extract_base_url(doc)
 
@@ -87,12 +91,7 @@ pub fn build_with(doc: Document, options: BuildOptions) -> ir.CodegenIR {
 /// Two component schemas whose names differ only in what `to_type_name` drops
 /// (`Fields` and `fields` in Jira's spec) would define one type twice. The
 /// later one, in sorted order, is renamed to a free name and every `$ref` to
-/// it rewritten.
-///
-/// References are spread over every part of the document, so they are
-/// rewritten in its JSON form, where each is a quoted string starting with
-/// `"#/components/schemas/`, instead of with a walker per object type. Only a
-/// colliding spec pays for the re-encode.
+/// it, and every discriminator mapping naming it, is rewritten.
 fn rename_colliding_schemas(doc: Document) -> Document {
   let renames = case doc.components {
     option.Some(c) -> colliding_renames(c.schemas)
@@ -101,35 +100,32 @@ fn rename_colliding_schemas(doc: Document) -> Document {
   case dict.is_empty(renames) {
     True -> doc
     False -> {
-      let source =
-        dict.fold(
-          renames,
-          json.to_string(encoder.encode_document(doc)),
-          fn(source, old, new) {
-            source
-            |> string.replace(ref_prefix(old) <> "\"", ref_prefix(new) <> "\"")
-            |> string.replace(ref_prefix(old) <> "/", ref_prefix(new) <> "/")
-          },
-        )
-      case json.parse(source, decoder.document_decoder()) {
-        Ok(renamed) ->
-          document.Document(
-            ..renamed,
-            components: option.map(renamed.components, fn(c) {
-              components.Components(
-                ..c,
-                schemas: c.schemas
-                  |> rename_keys(renames)
-                  |> dict.map_values(fn(_, s) { rename_mapping(s, renames) }),
-              )
-            }),
-          )
-        // The encoder and decoder are each other's inverse, so this is not
-        // expected. If it happens, the spec is used as written: the duplicate
-        // type then fails to compile, which names the schemas involved.
-        Error(_) -> doc
+      let renamed = schema_refs.map_document(doc, renamed_target(_, renames))
+      document.Document(
+        ..renamed,
+        components: option.map(renamed.components, fn(c) {
+          components.Components(..c, schemas: rename_keys(c.schemas, renames))
+        }),
+      )
+    }
+  }
+}
+
+/// `target` (a `$ref`, or a bare schema name in a discriminator mapping) after
+/// the renames.
+fn renamed_target(target: String, renames: dict.Dict(String, String)) -> String {
+  case string.split_once(target, "#/components/schemas/") {
+    Ok(#("", pointer)) -> {
+      let #(segment, rest) = case string.split_once(pointer, "/") {
+        Ok(#(segment, rest)) -> #(segment, "/" <> rest)
+        Error(_) -> #(pointer, "")
+      }
+      case dict.get(renames, unescape_pointer(segment)) {
+        Ok(new) -> schema_ref(new) <> rest
+        Error(_) -> target
       }
     }
+    _ -> result.unwrap(dict.get(renames, target), target)
   }
 }
 
@@ -157,33 +153,6 @@ fn colliding_renames(
       }
     })
   renames
-}
-
-/// The start of a JSON-encoded `$ref` to component schema `name`.
-fn ref_prefix(name: String) -> String {
-  "\"" <> schema_ref(name)
-}
-
-/// A discriminator `mapping` may name its target bare (`x: fields`) instead of
-/// with a `$ref`, which the rewrite of `$ref` strings does not reach.
-fn rename_mapping(s: Schema, renames: dict.Dict(String, String)) -> Schema {
-  case s.discriminator {
-    option.Some(schema.Discriminator(mapping: option.Some(mapping), ..) as d) ->
-      schema.Schema(
-        ..s,
-        discriminator: option.Some(
-          schema.Discriminator(
-            ..d,
-            mapping: option.Some(
-              dict.map_values(mapping, fn(_, target) {
-                result.unwrap(dict.get(renames, target), target)
-              }),
-            ),
-          ),
-        ),
-      )
-    _ -> s
-  }
 }
 
 fn rename_keys(
@@ -893,6 +862,113 @@ fn is_string_enum(s: Schema) -> Bool {
     option.Some([_, ..]), option.Some(schema.SingleType(schema.TypeString)) ->
       True
     _, _ -> False
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate hoisted records
+// ---------------------------------------------------------------------------
+
+/// Makes each record that hoisting named, and that has the same fields as
+/// another such record, an alias of it. Cloudflare's spec repeats the same
+/// inline response wrappers so often that 8,524 of its 14,655 types were
+/// copies, each with its own decoder and encoder; the copies were most of the
+/// generated code and of the time to compile it.
+///
+/// Fields are compared by label, type, whether required, and constraints;
+/// descriptions are ignored. A record whose field types merged can then match
+/// another, so it repeats until nothing merges. Of each group the
+/// alphabetically first name keeps the record, so the result is the same on
+/// every run. Records the spec names itself (`hoisted` is False) are kept.
+fn merge_hoisted_duplicates(
+  types: List(ir.TypeDef),
+  hoisted: fn(String) -> Bool,
+) -> List(ir.TypeDef) {
+  let aliases = find_duplicates(types, hoisted, dict.new())
+  list.map(types, fn(td) {
+    case td {
+      ir.RecordType(name, _, description) ->
+        case dict.get(aliases, name) {
+          Ok(canonical) ->
+            ir.AliasType(
+              name: name,
+              target: ir.Named(resolve_alias(canonical, aliases)),
+              description: description,
+            )
+          Error(_) -> td
+        }
+      _ -> td
+    }
+  })
+}
+
+fn find_duplicates(
+  types: List(ir.TypeDef),
+  hoisted: fn(String) -> Bool,
+  aliases: dict.Dict(String, String),
+) -> dict.Dict(String, String) {
+  let groups =
+    list.fold(types, dict.new(), fn(groups, td) {
+      case td {
+        ir.RecordType(name, fields, _) ->
+          case hoisted(name) && !dict.has_key(aliases, name) {
+            True ->
+              dict.upsert(groups, record_shape(fields, aliases), fn(names) {
+                [name, ..option.unwrap(names, [])]
+              })
+            False -> groups
+          }
+        _ -> groups
+      }
+    })
+  let found =
+    dict.fold(groups, aliases, fn(aliases, _, names) {
+      case list.sort(names, string.compare) {
+        [canonical, _, ..] as sorted ->
+          list.fold(list.drop(sorted, 1), aliases, fn(aliases, name) {
+            dict.insert(aliases, name, canonical)
+          })
+        _ -> aliases
+      }
+    })
+  case dict.size(found) == dict.size(aliases) {
+    True -> found
+    False -> find_duplicates(types, hoisted, found)
+  }
+}
+
+/// What a record's fields decode, with merged names followed to the record
+/// that stays.
+fn record_shape(
+  fields: List(ir.Field),
+  aliases: dict.Dict(String, String),
+) -> List(#(String, ir.TypeRef, Bool, ir.Constraints)) {
+  fields
+  |> list.map(fn(f) {
+    #(f.name, canonical_ref(f.type_ref, aliases), f.required, f.constraints)
+  })
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+}
+
+fn canonical_ref(
+  ref: ir.TypeRef,
+  aliases: dict.Dict(String, String),
+) -> ir.TypeRef {
+  case ref {
+    ir.Named(name) -> ir.Named(resolve_alias(name, aliases))
+    ir.Array(inner) -> ir.Array(canonical_ref(inner, aliases))
+    ir.Nullable(inner) -> ir.Nullable(canonical_ref(inner, aliases))
+    ir.Optional(inner) -> ir.Optional(canonical_ref(inner, aliases))
+    ir.Dict(key, value) ->
+      ir.Dict(canonical_ref(key, aliases), canonical_ref(value, aliases))
+    other -> other
+  }
+}
+
+fn resolve_alias(name: String, aliases: dict.Dict(String, String)) -> String {
+  case dict.get(aliases, name) {
+    Ok(target) -> resolve_alias(target, aliases)
+    Error(_) -> name
   }
 }
 

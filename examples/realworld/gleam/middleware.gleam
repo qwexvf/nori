@@ -1,3 +1,4 @@
+//// nori-hash: fe8b77a424c57541cef63788932a2596b74a1682fda3f49cb27119bac0209081 6a96f398040de84d8651f1e257b1e2cb5059bc26ba02a66d0929e847d9d408f2
 //// Generated middleware from RealWorld Blog API v1.0.0
 ////
 //// Auth extractors, route guards, and composable middleware.

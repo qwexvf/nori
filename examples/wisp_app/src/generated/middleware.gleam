@@ -1,3 +1,4 @@
+//// nori-hash: ee0d0d72f252e68b566f0c670ebe04592860c94b9a098bccb84ed11e9be190c8 bc2ae6bc80d6fcc203257acd8c9edbabcc8b18425f48294e8bcf748177d1134a
 //// Generated middleware from Todo API v1.0.0
 ////
 //// Auth extractors, route guards, and composable middleware.

@@ -6,6 +6,7 @@
 //// `types.<name>_decoder()` in client.gleam, so any drift between two copies
 //// produces a call to a function that was never generated.
 
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -22,6 +23,66 @@ import nori/codegen/ir
 /// Runs of underscores are left alone. Collapsing them would be prettier but
 /// buys nothing, and every caller has to agree character for character.
 pub fn to_snake_case(name: String) -> String {
+  case ascii_snake(bit_array.from_string(name), <<>>, True) {
+    Ok(bits) -> ascii_to_string(bits)
+    Error(_) -> grapheme_snake_case(name)
+  }
+}
+
+/// Names are converted millions of times on a large spec, and splitting into
+/// graphemes dominated: Cloudflare's spec took about 13M grapheme pops. An ASCII
+/// name, which is nearly every name, is walked as bytes instead. Each ASCII
+/// byte is one grapheme except in `\r\n`, so the result is the same; anything
+/// else takes the grapheme path.
+fn ascii_snake(
+  bits: BitArray,
+  acc: BitArray,
+  is_start: Bool,
+) -> Result(BitArray, Nil) {
+  case bits {
+    <<>> -> Ok(acc)
+    <<b, rest:bits>> if b >= 65 && b <= 90 ->
+      case is_start {
+        True -> ascii_snake(rest, <<acc:bits, { b + 32 }>>, False)
+        False -> ascii_snake(rest, <<acc:bits, 95, { b + 32 }>>, False)
+      }
+    <<b, rest:bits>> if b >= 97 && b <= 122 || b >= 48 && b <= 57 || b == 95 ->
+      ascii_snake(rest, <<acc:bits, b>>, False)
+    <<b, _:bits>> if b >= 128 || b == 13 -> Error(Nil)
+    <<_, rest:bits>> -> ascii_snake(rest, <<acc:bits, 95>>, False)
+    _ -> Error(Nil)
+  }
+}
+
+/// Words of ASCII letters and digits, each with its first letter upper-cased,
+/// joined: what `to_type_name` and `to_pascal_case` build from an ASCII name.
+fn ascii_pascal(
+  bits: BitArray,
+  acc: BitArray,
+  word_start: Bool,
+) -> Result(BitArray, Nil) {
+  case bits {
+    <<>> -> Ok(acc)
+    <<b, rest:bits>> if b >= 97 && b <= 122 ->
+      case word_start {
+        True -> ascii_pascal(rest, <<acc:bits, { b - 32 }>>, False)
+        False -> ascii_pascal(rest, <<acc:bits, b>>, False)
+      }
+    <<b, rest:bits>> if b >= 65 && b <= 90 || b >= 48 && b <= 57 ->
+      ascii_pascal(rest, <<acc:bits, b>>, False)
+    <<b, _:bits>> if b >= 128 || b == 13 -> Error(Nil)
+    <<_, rest:bits>> -> ascii_pascal(rest, acc, True)
+    _ -> Error(Nil)
+  }
+}
+
+fn ascii_to_string(bits: BitArray) -> String {
+  // Only ASCII bytes are written, so this cannot fail.
+  let assert Ok(s) = bit_array.to_string(bits)
+  s
+}
+
+fn grapheme_snake_case(name: String) -> String {
   name
   |> string.to_graphemes
   |> list.map(fn(c) {
@@ -73,13 +134,15 @@ fn is_upper(c: String) -> Bool {
 pub fn to_field_name(name: String) -> String {
   let snake = to_snake_case(name)
   let trimmed = trim_leading_underscores(snake)
-  let moved = string.repeat("_", string.length(snake) - string.length(trimmed))
+  // snake_case output is ASCII, so bytes are characters.
+  let moved =
+    string.repeat("_", string.byte_size(snake) - string.byte_size(trimmed))
   let snake = case trimmed, starts_with_digit(trimmed) {
     "", _ -> "value" <> snake
     _, True -> "n" <> trimmed <> moved
     _, False -> trimmed <> moved
   }
-  case list.contains(keywords, snake) {
+  case is_keyword(snake) {
     True -> snake <> "_"
     False -> snake
   }
@@ -92,11 +155,34 @@ fn trim_leading_underscores(s: String) -> String {
   }
 }
 
-const keywords = [
-  "as", "assert", "auto", "case", "const", "delegate", "derive", "echo", "else",
-  "fn", "if", "implement", "import", "let", "macro", "opaque", "panic", "pub",
-  "test", "todo", "type", "use",
-]
+/// Gleam's keywords, including those it reserves for future use.
+fn is_keyword(name: String) -> Bool {
+  case name {
+    "as"
+    | "assert"
+    | "auto"
+    | "case"
+    | "const"
+    | "delegate"
+    | "derive"
+    | "echo"
+    | "else"
+    | "fn"
+    | "if"
+    | "implement"
+    | "import"
+    | "let"
+    | "macro"
+    | "opaque"
+    | "panic"
+    | "pub"
+    | "test"
+    | "todo"
+    | "type"
+    | "use" -> True
+    _ -> False
+  }
+}
 
 /// Argument names for one function's parameters, unique within it.
 pub opaque type ParamNames {
@@ -227,20 +313,10 @@ fn location_word(location: ir.ParamLocation) -> String {
 /// Every reference to the type has to route through here too, or the definition
 /// and its uses end up with different names.
 pub fn to_type_name(name: String) -> String {
-  let pascal =
-    name
-    |> string.to_graphemes
-    |> list.map(fn(c) {
-      case is_alphanumeric(c) {
-        True -> c
-        False -> " "
-      }
-    })
-    |> string.join("")
-    |> string.split(" ")
-    |> list.filter(fn(chunk) { chunk != "" })
-    |> list.map(capitalize)
-    |> string.join("")
+  let pascal = case ascii_pascal(bit_array.from_string(name), <<>>, True) {
+    Ok(bits) -> ascii_to_string(bits)
+    Error(_) -> grapheme_type_words(name)
+  }
 
   // A leading digit cannot start a type name; "2fa" needs a prefix, not a trim,
   // so that "2fa" and "fa" stay distinct.
@@ -248,6 +324,22 @@ pub fn to_type_name(name: String) -> String {
     True -> "Schema" <> pascal
     False -> pascal
   }
+}
+
+fn grapheme_type_words(name: String) -> String {
+  name
+  |> string.to_graphemes
+  |> list.map(fn(c) {
+    case is_alphanumeric(c) {
+      True -> c
+      False -> " "
+    }
+  })
+  |> string.join("")
+  |> string.split(" ")
+  |> list.filter(fn(chunk) { chunk != "" })
+  |> list.map(capitalize)
+  |> string.join("")
 }
 
 fn starts_with_digit(s: String) -> Bool {
@@ -273,6 +365,13 @@ fn is_alphanumeric(c: String) -> Bool {
 /// An operationId such as `remove-items-playlist` is legal in OpenAPI, so any
 /// character that cannot appear in an identifier separates words like `_` does.
 pub fn to_pascal_case(name: String) -> String {
+  case ascii_pascal(bit_array.from_string(name), <<>>, True) {
+    Ok(bits) -> ascii_to_string(bits)
+    Error(_) -> grapheme_pascal_case(name)
+  }
+}
+
+fn grapheme_pascal_case(name: String) -> String {
   name
   |> string.to_graphemes
   |> list.map(fn(c) {

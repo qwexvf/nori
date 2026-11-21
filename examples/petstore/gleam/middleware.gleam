@@ -1,3 +1,4 @@
+//// nori-hash: 31479f2ad80e620d5084836e346f9acc3ff13910a2f30eeecb9866096da3c823 117057e605666b93885c1c6f714117560270e989dcaa63c980e8d98417f9c13e
 //// Generated middleware from Petstore API v1.0.0
 ////
 //// Auth extractors, route guards, and composable middleware.

@@ -306,16 +306,31 @@ fn generate_command() -> glint.Command(Nil) {
               list.each(files, fn(f) { info(v, "  " <> f.path) })
             }
             _, False -> {
-              case write_generated_files(files, v) {
+              // A formatted file whose generated text has not changed since
+              // it was written is left alone: formatting Cloudflare's output
+              // takes about five seconds, and an untouched file keeps its
+              // modification time for the compiler.
+              let #(unchanged, changed) = case format_val {
+                True -> list.partition(files, is_unchanged)
+                False -> #([], files)
+              }
+              case write_generated_files(changed, v) {
                 Ok(_) -> {
                   info(
                     v,
                     "Generated "
                       <> int.to_string(list.length(files))
-                      <> " file(s)",
+                      <> " file(s)"
+                      <> case unchanged {
+                      [] -> ""
+                      _ ->
+                        ", "
+                        <> int.to_string(list.length(unchanged))
+                        <> " unchanged"
+                    },
                   )
                   case format_val {
-                    True -> format_gleam_files(files, v)
+                    True -> format_gleam_files(changed, v)
                     False -> Nil
                   }
                 }
@@ -335,6 +350,47 @@ fn generate_command() -> glint.Command(Nil) {
   }
 }
 
+/// The first line of a formatted generated file (`is_unchanged` matches the
+/// same literal): the hash of the text nori generated, then the hash of the
+/// formatted file below this line.
+const stamp_prefix = "//// nori-hash: "
+
+/// Puts the stamp on a file that was just formatted. Without it the file is
+/// simply regenerated next time.
+fn stamp(file: plugin.GeneratedFile) -> Nil {
+  case simplifile.read(file.path) {
+    Ok(formatted) -> {
+      let line =
+        stamp_prefix
+        <> content_hash(file.content)
+        <> " "
+        <> content_hash(formatted)
+        <> "\n"
+      let _ = simplifile.write(file.path, line <> formatted)
+      Nil
+    }
+    Error(_) -> Nil
+  }
+}
+
+/// Whether `file` on disk is what formatting `file.content` produced last
+/// time, and has not been edited since.
+fn is_unchanged(file: plugin.GeneratedFile) -> Bool {
+  case simplifile.read(file.path) {
+    Ok(existing) ->
+      case string.split_once(existing, "\n") {
+        Ok(#("//// nori-hash: " <> hashes, formatted)) ->
+          hashes == content_hash(file.content) <> " " <> content_hash(formatted)
+        _ -> False
+      }
+    Error(_) -> False
+  }
+}
+
+@external(erlang, "cli_ffi", "content_hash")
+@external(javascript, "./cli_ffi.mjs", "content_hash")
+fn content_hash(content: String) -> String
+
 /// Runs `gleam format` over the Gleam files just written (#36).
 ///
 /// Templates cannot match the formatter's line breaking without reimplementing
@@ -350,13 +406,18 @@ fn format_gleam_files(files: List(plugin.GeneratedFile), v: Verbosity) -> Nil {
     [] -> Nil
     _ ->
       case run_executable("gleam", ["format", ..paths]) {
-        Ok(#(0, _)) ->
+        Ok(#(0, _)) -> {
+          list.each(
+            list.filter(files, fn(f) { string.ends_with(f.path, ".gleam") }),
+            stamp,
+          )
           detail(
             v,
             "Formatted "
               <> int.to_string(list.length(paths))
               <> " Gleam file(s)",
           )
+        }
         Ok(#(_, output)) ->
           io.println_error(
             "Warning: `gleam format` failed on the generated files; they are written but unformatted:\n"
@@ -563,6 +624,8 @@ fn generate_gleam(
 
   // A spec with no schemas would otherwise get a types module holding nothing
   // but a header comment, which the compiler warns about as an empty module.
+  // Decoders and encoders go next to the types, in `codecs` (and, for a large
+  // spec, `codecs/part_N`).
   let types_files = case codegen_ir.types {
     [] -> []
     _ -> [
@@ -570,6 +633,17 @@ fn generate_gleam(
         path: file_dir(tc, "types") <> "/" <> suffix(tc, "types", ".gleam"),
         content: gleam_types.generate(codegen_ir),
       ),
+      ..list.map(
+        gleam_types.generate_codecs(codegen_ir, types_module),
+        fn(file) {
+          let #(relative, content) = file
+          let base = string.drop_end(relative, string.length(".gleam"))
+          plugin.GeneratedFile(
+            path: file_dir(tc, "types") <> "/" <> suffix(tc, base, ".gleam"),
+            content: content,
+          )
+        },
+      )
     ]
   }
   // Only a spec that marks operations with `x-mcp` gets an MCP module; one

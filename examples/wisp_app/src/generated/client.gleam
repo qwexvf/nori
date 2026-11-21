@@ -1,5 +1,7 @@
+//// nori-hash: 872e11539aa693d2b057560aad9de303cc93b85529bc29b2b237f860e7e9fd52 a878f4810e2f29595382faec53875b7c8bee2be13617dba4f12f3b9abcd6f83d
 //// Generated HTTP client from Todo API v1.0.0
 
+import generated/codecs
 import generated/types
 import gleam/bool
 import gleam/dynamic/decode
@@ -39,7 +41,7 @@ pub fn create_todo_request(
     list.fold(config.headers, req, fn(r, h) { request.set_header(r, h.0, h.1) })
   }
   |> request.set_header("content-type", "application/json")
-  |> request.set_body(json.to_string(types.encode_create_todo_request(body)))
+  |> request.set_body(json.to_string(codecs.encode_create_todo_request(body)))
 }
 
 pub fn decode_create_todo_response(
@@ -47,7 +49,7 @@ pub fn decode_create_todo_response(
 ) -> Result(types.Todo, ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, types.todo_decoder()) {
+      case json.parse(resp.body, codecs.todo_decoder()) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -84,7 +86,7 @@ pub fn decode_list_todos_response(
 ) -> Result(List(types.Todo), ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, decode.list(types.todo_decoder())) {
+      case json.parse(resp.body, decode.list(codecs.todo_decoder())) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -132,7 +134,7 @@ pub fn update_todo_request(
     list.fold(config.headers, req, fn(r, h) { request.set_header(r, h.0, h.1) })
   }
   |> request.set_header("content-type", "application/json")
-  |> request.set_body(json.to_string(types.encode_update_todo_request(body)))
+  |> request.set_body(json.to_string(codecs.encode_update_todo_request(body)))
 }
 
 pub fn decode_update_todo_response(
@@ -140,7 +142,7 @@ pub fn decode_update_todo_response(
 ) -> Result(types.Todo, ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, types.todo_decoder()) {
+      case json.parse(resp.body, codecs.todo_decoder()) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -167,7 +169,7 @@ pub fn decode_get_todo_response(
 ) -> Result(types.Todo, ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, types.todo_decoder()) {
+      case json.parse(resp.body, codecs.todo_decoder()) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }

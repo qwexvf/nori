@@ -164,14 +164,16 @@ pub fn generate_gleam_types_test() {
   |> string.contains("email: String")
   |> should.be_true
 
-  // Should contain decoder function
-  output
-  |> string.contains("pub fn user_decoder()")
+  // The decoder is in the decoders module, building the types module's record.
+  let assert [#("codecs.gleam", codecs)] =
+    gleam_types.generate_codecs(ir, "generated")
+  codecs
+  |> string.contains("pub fn user_decoder() -> Decoder(types.User)")
   |> should.be_true
+  codecs |> string.contains("import generated/types") |> should.be_true
 
-  // Should contain encoder function
-  output
-  |> string.contains("pub fn encode_user(")
+  codecs
+  |> string.contains("pub fn encode_user(value: types.User) -> Json")
   |> should.be_true
 
   // Should contain module header
@@ -219,12 +221,12 @@ pub fn generate_gleam_client_test() {
   |> should.be_true
 
   output
-  |> string.contains("types.user_decoder()")
+  |> string.contains("import generated/codecs")
   |> should.be_true
 
   // Bug 2 fix: response decoding uses single json.parse, not decode.run
   output
-  |> string.contains("json.parse(resp.body, types.user_decoder())")
+  |> string.contains("json.parse(resp.body, codecs.user_decoder())")
   |> should.be_true
 
   output
@@ -463,18 +465,23 @@ pub fn generate_enum_from_to_string_test() {
 
 /// #19: decode.failure needs a value of the type, not the type name.
 pub fn generate_enum_decoder_failure_uses_variant_test() {
-  let output = gleam_types.generate(enum_ir([loan_status_type()]))
+  let assert [#(_, output)] =
+    gleam_types.generate_codecs(enum_ir([loan_status_type()]), "generated")
 
-  output |> should_contain("decode.failure(LoanStatusActive, \"LoanStatus\")")
+  output
+  |> should_contain("decode.failure(types.LoanStatusActive, \"LoanStatus\")")
   output |> should_not_contain("decode.failure(LoanStatus,")
 }
 
 pub fn generate_enum_encoder_test() {
-  let output = gleam_types.generate(enum_ir([loan_status_type()]))
+  let assert [#(_, output)] =
+    gleam_types.generate_codecs(enum_ir([loan_status_type()]), "generated")
 
   output
-  |> should_contain("pub fn encode_loan_status(value: LoanStatus) -> Json")
-  output |> should_contain("json.string(loan_status_to_string(value))")
+  |> should_contain(
+    "pub fn encode_loan_status(value: types.LoanStatus) -> Json",
+  )
+  output |> should_contain("json.string(types.loan_status_to_string(value))")
 }
 
 /// A schema named Error shadows the prelude constructor the enum helpers need.

@@ -1,5 +1,7 @@
+//// nori-hash: 79e66074ec78c1a880c65719e0986c75a3aae894b36b855475c8769aca7936dd a39c4b991e63de814322c3ff2b695323bf227c3e02d96fbf111e61cb97f6877f
 //// Generated HTTP client from Petstore API v1.0.0
 
+import gleam/codecs
 import gleam/dynamic/decode
 import gleam/http.{Get, Post}
 import gleam/http/request.{type Request}
@@ -39,7 +41,7 @@ pub fn create_pet_request(
     list.fold(config.headers, req, fn(r, h) { request.set_header(r, h.0, h.1) })
   }
   |> request.set_header("content-type", "application/json")
-  |> request.set_body(json.to_string(types.encode_create_pet_request(body)))
+  |> request.set_body(json.to_string(codecs.encode_create_pet_request(body)))
 }
 
 pub fn decode_create_pet_response(
@@ -81,7 +83,7 @@ pub fn decode_list_pets_response(
 ) -> Result(List(types.Pet), ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, decode.list(types.pet_decoder())) {
+      case json.parse(resp.body, decode.list(codecs.pet_decoder())) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -111,7 +113,7 @@ pub fn decode_show_pet_by_id_response(
 ) -> Result(types.Pet, ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, types.pet_decoder()) {
+      case json.parse(resp.body, codecs.pet_decoder()) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
