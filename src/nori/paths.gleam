@@ -155,7 +155,10 @@ pub fn with_patch(item: PathItem, op: Operation) -> PathItem {
 }
 
 /// Adds parameters to a path item.
-pub fn with_parameters(item: PathItem, params: List(Ref(Parameter))) -> PathItem {
+pub fn with_parameters(
+  item: PathItem,
+  params: List(Ref(Parameter)),
+) -> PathItem {
   PathItem(..item, parameters: params)
 }
 

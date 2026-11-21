@@ -1,4 +1,4 @@
-//// nori-hash: 15389137e1e949bdfc6082ac9468a997e8b194623e9a8f238402cffbc7f26003 5ac2607fc941f3f0f643cb511247cab9a723523782cd6611a696733c87403b89
+//// nori-hash: 15389137e1e949bdfc6082ac9468a997e8b194623e9a8f238402cffbc7f26003 c1a6392b47e7886a82a29d2c982d4066172b25de5778f3b72999ea0bf0d076e3
 //// Generated routes from Todo API v1.0.0
 
 import generated/types.{
@@ -92,7 +92,10 @@ fn query_optional(
   }
 }
 
-fn query_first(params: List(#(String, String)), name: String) -> Option(String) {
+fn query_first(
+  params: List(#(String, String)),
+  name: String,
+) -> Option(String) {
   case list.find(params, fn(pair) { pair.0 == name }) {
     Ok(pair) -> option.Some(pair.1)
     Error(_) -> option.None

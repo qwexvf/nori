@@ -652,7 +652,10 @@ fn member_name(ref: TypeRef) -> String {
   }
 }
 
-fn union_variants(variants: Variants, union: String) -> List(#(TypeRef, String)) {
+fn union_variants(
+  variants: Variants,
+  union: String,
+) -> List(#(TypeRef, String)) {
   dict.get(variants, union) |> result.unwrap([])
 }
 
@@ -811,7 +814,10 @@ fn generate_enum_from_string(
   <> "\n    _ -> gleam.Error(Nil)\n  }\n}"
 }
 
-fn generate_enum_to_string(name: String, variants: List(EnumVariant)) -> String {
+fn generate_enum_to_string(
+  name: String,
+  variants: List(EnumVariant),
+) -> String {
   let fn_name = to_snake_case(name) <> "_to_string"
   let cases =
     variants
@@ -1188,7 +1194,8 @@ fn type_ref_decoder(ref: TypeRef, q: fn(String) -> String) -> String {
 /// Decodes a JSON `number`. On Erlang `decode.float` rejects a value written
 /// without a fraction (`1`), which a `number` field legitimately holds, so an
 /// integer is accepted and converted. The module using it imports `gleam/int`.
-pub const float_decoder = "decode.one_of(decode.float, [decode.int |> decode.map(int.to_float)])"
+pub const float_decoder =
+  "decode.one_of(decode.float, [decode.int |> decode.map(int.to_float)])"
 
 fn primitive_decoder(p: PrimitiveType) -> String {
   case p {

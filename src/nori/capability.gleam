@@ -233,7 +233,10 @@ fn check_callbacks(op: Operation, op_loc: String) -> List(Issue) {
   }
 }
 
-fn check_parameters(params: List(Ref(Parameter)), op_loc: String) -> List(Issue) {
+fn check_parameters(
+  params: List(Ref(Parameter)),
+  op_loc: String,
+) -> List(Issue) {
   params
   |> list.index_map(fn(p, idx) { #(idx, p) })
   |> list.flat_map(fn(pair) {

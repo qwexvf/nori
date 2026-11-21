@@ -158,7 +158,11 @@ pub fn add_security_scheme(
 }
 
 /// Adds a link to the components.
-pub fn add_link(components: Components, name: String, link: Link) -> Components {
+pub fn add_link(
+  components: Components,
+  name: String,
+  link: Link,
+) -> Components {
   Components(
     ..components,
     links: dict.insert(components.links, name, reference.Inline(link)),

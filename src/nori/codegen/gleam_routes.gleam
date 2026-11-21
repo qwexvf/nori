@@ -823,7 +823,8 @@ fn is_array_param(p: ir.EndpointParam) -> Bool {
   }
 }
 
-const query_error_type = "/// Why a query string could not be read as the spec describes it.
+const query_error_type =
+  "/// Why a query string could not be read as the spec describes it.
 ///
 /// Missing and malformed are separate cases on purpose: one is a client that
 /// omitted something, the other a client that sent nonsense, and they usually
@@ -1155,15 +1156,18 @@ fn enum_parsers(body: String, enums: List(String)) -> String {
   }
 }
 
-const query_helpers_comment = "// ── query helpers ─────────────────────────────────────────────"
+const query_helpers_comment =
+  "// ── query helpers ─────────────────────────────────────────────"
 
-const repeated_key_comment = "//
+const repeated_key_comment =
+  "//
 // A repeated key (`?tag=a&tag=b`) is how OpenAPI's default `style: form,
 // explode: true` sends a list, so that is what the list readers collect. A
 // single comma-joined value is NOT split: `?q=a,b` is one value containing a
 // comma, and guessing otherwise would corrupt search text."
 
-const helper_query_optional = "fn query_optional(
+const helper_query_optional =
+  "fn query_optional(
   params: List(#(String, String)),
   name: String,
   parse: fn(String, String) -> Result(a, QueryError),
@@ -1174,7 +1178,8 @@ const helper_query_optional = "fn query_optional(
   }
 }"
 
-const helper_query_required = "fn query_required(
+const helper_query_required =
+  "fn query_required(
   params: List(#(String, String)),
   name: String,
   parse: fn(String, String) -> Result(a, QueryError),
@@ -1185,7 +1190,8 @@ const helper_query_required = "fn query_required(
   }
 }"
 
-const helper_query_list = "fn query_list(
+const helper_query_list =
+  "fn query_list(
   params: List(#(String, String)),
   name: String,
   parse: fn(String, String) -> Result(a, QueryError),
@@ -1196,7 +1202,8 @@ const helper_query_list = "fn query_list(
   |> result.all
 }"
 
-const helper_query_required_list = "fn query_required_list(
+const helper_query_required_list =
+  "fn query_required_list(
   params: List(#(String, String)),
   name: String,
   parse: fn(String, String) -> Result(a, QueryError),
@@ -1207,7 +1214,8 @@ const helper_query_required_list = "fn query_required_list(
   }
 }"
 
-const helper_query_first = "fn query_first(
+const helper_query_first =
+  "fn query_first(
   params: List(#(String, String)),
   name: String,
 ) -> Option(String) {
@@ -1217,15 +1225,18 @@ const helper_query_first = "fn query_first(
   }
 }"
 
-const helper_parse_string = "fn parse_string_param(_name: String, raw: String) -> Result(String, QueryError) {
+const helper_parse_string =
+  "fn parse_string_param(_name: String, raw: String) -> Result(String, QueryError) {
   Ok(raw)
 }"
 
-const helper_parse_int = "fn parse_int_param(name: String, raw: String) -> Result(Int, QueryError) {
+const helper_parse_int =
+  "fn parse_int_param(name: String, raw: String) -> Result(Int, QueryError) {
   int.parse(raw) |> result.replace_error(InvalidQueryParam(name, \"integer\"))
 }"
 
-const helper_parse_float = "fn parse_float_param(name: String, raw: String) -> Result(Float, QueryError) {
+const helper_parse_float =
+  "fn parse_float_param(name: String, raw: String) -> Result(Float, QueryError) {
   // An integer is a valid float in a query string, and `float.parse` rejects it.
   case float.parse(raw) {
     Ok(f) -> Ok(f)
@@ -1237,7 +1248,8 @@ const helper_parse_float = "fn parse_float_param(name: String, raw: String) -> R
   }
 }"
 
-const helper_parse_bool = "fn parse_bool_param(name: String, raw: String) -> Result(Bool, QueryError) {
+const helper_parse_bool =
+  "fn parse_bool_param(name: String, raw: String) -> Result(Bool, QueryError) {
   // `?flag` with no value arrives as an empty string and means present-is-true.
   case raw {
     \"true\" | \"1\" | \"\" -> Ok(True)

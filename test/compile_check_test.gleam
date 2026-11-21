@@ -37,7 +37,8 @@ const gen_dir = "build/compile_check/src/generated"
 const module_prefix = "generated"
 
 /// Deps are whatever generated Gleam imports beyond stdlib.
-const scratch_gleam_toml = "name = \"compile_check\"
+const scratch_gleam_toml =
+  "name = \"compile_check\"
 version = \"0.0.0\"
 gleam = \">= 1.15.0\"
 
@@ -964,7 +965,8 @@ components:
   ir |> should_compile
 }
 
-const options_spec = "openapi: '3.1.0'
+const options_spec =
+  "openapi: '3.1.0'
 info:
   title: Options
   version: '1.0.0'

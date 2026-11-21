@@ -165,7 +165,10 @@ fn emit_mapping(
   }
 }
 
-fn emit_mapping_block(pairs: List(#(String, YamlValue)), indent: Int) -> String {
+fn emit_mapping_block(
+  pairs: List(#(String, YamlValue)),
+  indent: Int,
+) -> String {
   pairs
   |> list.map(fn(pair) {
     let #(key, val) = pair

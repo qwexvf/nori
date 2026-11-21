@@ -32,7 +32,10 @@ pub fn new() -> RequestBody {
 }
 
 /// Creates a `RequestBody` with a single content type.
-pub fn with_content(content_type: String, media_type: MediaType) -> RequestBody {
+pub fn with_content(
+  content_type: String,
+  media_type: MediaType,
+) -> RequestBody {
   RequestBody(
     description: option.None,
     content: dict.from_list([#(content_type, media_type)]),

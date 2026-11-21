@@ -778,7 +778,8 @@ fn header(
   |> string.join("\n")
 }
 
-const tool_type = "/// A tool as `tools/list` describes it, plus what the server needs to run it.
+const tool_type =
+  "/// A tool as `tools/list` describes it, plus what the server needs to run it.
 pub type Tool {
   Tool(
     name: String,
@@ -795,7 +796,8 @@ pub type Tool {
   )
 }"
 
-const lookup_fns = "/// The tool with this name.
+const lookup_fns =
+  "/// The tool with this name.
 pub fn tool(name: String) -> Result(Tool, Nil) {
   list.find(tools(), fn(t) { t.name == name })
 }
@@ -824,7 +826,8 @@ pub fn tool_to_json(tool: Tool) -> Json {
   )
 }"
 
-const call_error_type = "pub type ToolCallError {
+const call_error_type =
+  "pub type ToolCallError {
   UnknownTool(name: String)
   InvalidArguments(errors: List(decode.DecodeError))
 }"

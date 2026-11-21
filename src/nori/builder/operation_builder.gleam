@@ -78,7 +78,10 @@ pub fn parameter(
 }
 
 /// Adds a parameter reference.
-pub fn parameter_ref(builder: OperationBuilder, ref: String) -> OperationBuilder {
+pub fn parameter_ref(
+  builder: OperationBuilder,
+  ref: String,
+) -> OperationBuilder {
   OperationBuilder(
     operation: Operation(
       ..builder.operation,
@@ -114,7 +117,10 @@ pub fn request_body_ref(
 }
 
 /// Sets a JSON request body.
-pub fn json_body(builder: OperationBuilder, schema: Schema) -> OperationBuilder {
+pub fn json_body(
+  builder: OperationBuilder,
+  schema: Schema,
+) -> OperationBuilder {
   let media_type =
     MediaType(
       schema: option.Some(reference.Inline(schema)),
@@ -298,7 +304,10 @@ pub fn server(builder: OperationBuilder, s: Server) -> OperationBuilder {
 }
 
 /// Sets external documentation.
-pub fn external_docs(builder: OperationBuilder, url: String) -> OperationBuilder {
+pub fn external_docs(
+  builder: OperationBuilder,
+  url: String,
+) -> OperationBuilder {
   let docs =
     ExternalDocumentation(
       url: url,

@@ -367,7 +367,10 @@ pub fn not(builder: SchemaBuilder, s: Ref(Schema)) -> SchemaBuilder {
 // Enum
 
 /// Sets enum values.
-pub fn enum_values(builder: SchemaBuilder, values: List(Json)) -> SchemaBuilder {
+pub fn enum_values(
+  builder: SchemaBuilder,
+  values: List(Json),
+) -> SchemaBuilder {
   SchemaBuilder(
     schema: Schema(..builder.schema, enum_values: option.Some(values)),
   )

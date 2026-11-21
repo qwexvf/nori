@@ -106,7 +106,11 @@ pub fn with_components(doc: Document, components: Components) -> Document {
 }
 
 /// Adds a webhook to the document.
-pub fn add_webhook(doc: Document, name: String, path_item: PathItem) -> Document {
+pub fn add_webhook(
+  doc: Document,
+  name: String,
+  path_item: PathItem,
+) -> Document {
   Document(
     ..doc,
     webhooks: dict.insert(doc.webhooks, name, reference.Inline(path_item)),
@@ -114,7 +118,10 @@ pub fn add_webhook(doc: Document, name: String, path_item: PathItem) -> Document
 }
 
 /// Adds a security requirement to the document.
-pub fn add_security(doc: Document, requirement: SecurityRequirement) -> Document {
+pub fn add_security(
+  doc: Document,
+  requirement: SecurityRequirement,
+) -> Document {
   Document(..doc, security: list.append(doc.security, [requirement]))
 }
 

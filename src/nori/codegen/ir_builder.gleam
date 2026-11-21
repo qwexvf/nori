@@ -113,7 +113,10 @@ fn rename_colliding_schemas(doc: Document) -> Document {
 
 /// `target` (a `$ref`, or a bare schema name in a discriminator mapping) after
 /// the renames.
-fn renamed_target(target: String, renames: dict.Dict(String, String)) -> String {
+fn renamed_target(
+  target: String,
+  renames: dict.Dict(String, String),
+) -> String {
   case string.split_once(target, "#/components/schemas/") {
     Ok(#("", pointer)) -> {
       let #(segment, rest) = case string.split_once(pointer, "/") {

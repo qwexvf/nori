@@ -9,7 +9,8 @@ import gleam/io
 import gleam/json
 import gleam/string
 
-const pod = "{
+const pod =
+  "{
   \"apiVersion\": \"v1\",
   \"kind\": \"Pod\",
   \"metadata\": {\"name\": \"web\", \"creationTimestamp\": \"2024-01-01T00:00:00Z\"},

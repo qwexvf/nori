@@ -126,7 +126,10 @@ fn parse_config(yaml: YamlValue) -> Config {
   Config(spec: spec, output: output)
 }
 
-fn parse_output_config(yaml: YamlValue, defaults: OutputConfig) -> OutputConfig {
+fn parse_output_config(
+  yaml: YamlValue,
+  defaults: OutputConfig,
+) -> OutputConfig {
   OutputConfig(
     gleam: parse_target(yaml, "gleam", defaults.gleam),
     typescript: parse_target(yaml, "typescript", defaults.typescript),

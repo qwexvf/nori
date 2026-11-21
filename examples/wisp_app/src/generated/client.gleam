@@ -1,4 +1,4 @@
-//// nori-hash: 872e11539aa693d2b057560aad9de303cc93b85529bc29b2b237f860e7e9fd52 a878f4810e2f29595382faec53875b7c8bee2be13617dba4f12f3b9abcd6f83d
+//// nori-hash: 872e11539aa693d2b057560aad9de303cc93b85529bc29b2b237f860e7e9fd52 7b46c80e295f574d06eaa7984f3563a90625d3889ad6c52fa7f371fd3d0d520f
 //// Generated HTTP client from Todo API v1.0.0
 
 import generated/codecs
@@ -96,7 +96,10 @@ pub fn decode_list_todos_response(
 }
 
 /// Delete a todo
-pub fn delete_todo_request(config: ClientConfig, id: String) -> Request(String) {
+pub fn delete_todo_request(
+  config: ClientConfig,
+  id: String,
+) -> Request(String) {
   let path = string.replace("/todos/{id}", "{id}", id)
   request.new()
   |> request.set_method(Delete)

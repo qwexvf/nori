@@ -69,7 +69,8 @@ fn get_embedded_template(name: String) -> String {
 
 // Embedded fallbacks (compact form — see templates/*.hbs for readable versions)
 
-const embedded_typescript_types = "{{#each types}}{{#if is_record}}{{#if has_description}}/** {{description}} */
+const embedded_typescript_types =
+  "{{#each types}}{{#if is_record}}{{#if has_description}}/** {{description}} */
 {{/if}}{{#if use_exports}}export {{/if}}{{#if use_interfaces}}interface {{name}} {
 {{/if}}{{#unless use_interfaces}}type {{name}} = {
 {{/unless}}{{#each fields}}{{#if has_field_description}}  /** {{field_description}} */
@@ -81,7 +82,8 @@ const embedded_typescript_types = "{{#each types}}{{#if is_record}}{{#if has_des
 
 {{/unless}}{{/each}}"
 
-const embedded_typescript_client = "{{type_imports}}
+const embedded_typescript_client =
+  "{{type_imports}}
 
 {{config_type}}
 
@@ -91,7 +93,8 @@ const embedded_typescript_client = "{{type_imports}}
 
 {{/unless}}{{/each}}"
 
-const embedded_typescript_react_query = "{{rq_imports}}
+const embedded_typescript_react_query =
+  "{{rq_imports}}
 {{type_imports}}
 {{client_imports}}
 
@@ -103,7 +106,8 @@ const embedded_typescript_react_query = "{{rq_imports}}
 
 {{/unless}}{{/each}}"
 
-const embedded_typescript_swr = "{{swr_imports}}
+const embedded_typescript_swr =
+  "{{swr_imports}}
 {{type_imports}}
 {{client_imports}}
 
@@ -509,7 +513,10 @@ fn build_response_handling(return_type: String) -> String {
 // TypeScript React Query context builder
 // ---------------------------------------------------------------------------
 
-pub fn ir_to_ts_react_query_context(ir: CodegenIR, modules: TsModules) -> Value {
+pub fn ir_to_ts_react_query_context(
+  ir: CodegenIR,
+  modules: TsModules,
+) -> Value {
   let rq_imports = generate_rq_imports(ir)
 
   // Key factories
