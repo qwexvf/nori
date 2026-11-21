@@ -6,6 +6,7 @@
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import nori/codegen/gleam_types
 import nori/codegen/ir.{
   type CodegenIR, type Endpoint, type EndpointParam, type TypeRef, Array, Delete,
   Get, Head, Named, Nullable, Optional, Options, Patch, Post, Primitive, Put,
@@ -48,6 +49,7 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
   let title_comment =
     "//// Generated HTTP client from " <> ir.title <> " v" <> ir.version
 
+  let enum_names = enum_type_names(ir)
   let referenced_types =
     ir.endpoints
     |> list.flat_map(fn(ep) {
@@ -55,14 +57,10 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
         Some(body) -> collect_named_types(body.type_ref)
         None -> []
       }
-      let response_types =
-        ep.responses
-        |> list.flat_map(fn(r) {
-          case r.type_ref {
-            Some(ref) -> collect_named_types(ref)
-            None -> []
-          }
-        })
+      let response_types = case returned_ref(ep) {
+        Some(ref) -> collect_named_types(ref)
+        None -> []
+      }
       // ⚠️ Enum-typed params only, and only because they call
       // types.<name>_to_string. A record-typed param is accepted as a String
       // (see `param_type`), so counting it here imported a module the generated
@@ -70,7 +68,7 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
       let param_types =
         ep.parameters
         |> list.flat_map(fn(p) { collect_named_types(p.type_ref) })
-        |> list.filter(fn(name) { list.contains(enum_type_names(ir), name) })
+        |> list.filter(list.contains(enum_names, _))
       list.flatten([body_types, response_types, param_types])
     })
     |> list.unique
@@ -123,7 +121,16 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
       ir.base_primitive(p.type_ref) == Some(prim)
     })
   }
-  let needs_int = uses_primitive(ir.PInt)
+  // A number response is decoded with gleam_types.float_decoder, which
+  // converts integers with int.to_float.
+  let decodes_number =
+    list.any(ir.endpoints, fn(ep) {
+      case returned_ref(ep) {
+        Some(ref) -> ir.base_primitive(ref) == Some(ir.PFloat)
+        None -> False
+      }
+    })
+  let needs_int = uses_primitive(ir.PInt) || decodes_number
   let needs_float = uses_primitive(ir.PFloat)
   let needs_bool = uses_primitive(ir.PBool)
   let needs_uri = case query_params {
@@ -140,21 +147,23 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
     [] -> False
     _ -> True
   }
+  let parses_json =
+    list.any(ir.endpoints, fn(ep) { option.is_some(returned_ref(ep)) })
+  // A named response parses with `types.<name>_decoder()`, which does not
+  // mention the decode module; any other type's decoder does.
   let needs_decode =
     list.any(ir.endpoints, fn(ep) {
-      list.any(ep.responses, fn(r) {
-        case r.type_ref {
-          Some(_) -> True
-          None -> False
-        }
-      })
+      case returned_ref(ep) {
+        Some(Named(_)) | None -> False
+        Some(_) -> True
+      }
     })
 
   // json.to_string encodes a request body and json.parse reads a response; a
   // spec of 204s does neither, and an unused import is a warning in a file the
   // consumer is told not to edit.
   let needs_json =
-    needs_decode
+    parses_json
     || list.any(ir.endpoints, fn(ep) { option.is_some(ep.request_body) })
 
   // Option appears in signatures via Nullable/Optional wraps OR optional query
@@ -167,13 +176,10 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
       })
     })
     || list.any(ir.endpoints, fn(ep) {
-      let resp_uses =
-        list.any(ep.responses, fn(r) {
-          case r.type_ref {
-            Some(ref) -> ref_uses_optional(ref)
-            None -> False
-          }
-        })
+      let resp_uses = case returned_ref(ep) {
+        Some(ref) -> ref_uses_optional(ref)
+        None -> False
+      }
       // a non-encodable body is emitted as `json.Json`, so any Optional it
       // wraps never surfaces as a `Some/None` pattern needing the import
       let body_uses = case ep.request_body {
@@ -188,13 +194,10 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
   // Type refs in any signature can resolve to `Dynamic` (when ir.Unknown).
   let needs_dynamic =
     list.any(ir.endpoints, fn(ep) {
-      let resp_uses =
-        list.any(ep.responses, fn(r) {
-          case r.type_ref {
-            Some(ref) -> ref_uses_unknown(ref)
-            None -> False
-          }
-        })
+      let resp_uses = case returned_ref(ep) {
+        Some(ref) -> ref_uses_unknown(ref)
+        None -> False
+      }
       // a non-encodable body (the only way a body reaches `Unknown`) is emitted
       // as `json.Json`, not `Dynamic`, so it never needs the dynamic import
       let param_uses =
@@ -207,12 +210,10 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
   // responses need the import.
   let needs_dict =
     list.any(ir.endpoints, fn(ep) {
-      list.any(ep.responses, fn(r) {
-        case r.type_ref {
-          Some(ref) -> ref_uses_dict(ref)
-          None -> False
-        }
-      })
+      case returned_ref(ep) {
+        Some(ref) -> ref_uses_dict(ref)
+        None -> False
+      }
     })
 
   let optional_imports = [
@@ -365,7 +366,8 @@ fn generate_request_fn(
     |> list.filter(fn(p) { p.location == ir.HeaderParam })
 
   // Build function parameters
-  let locals = build_locals(endpoint)
+  let names = naming.param_names(endpoint.parameters)
+  let locals = build_locals(endpoint, names)
 
   let param_args =
     build_param_args(
@@ -376,16 +378,17 @@ fn generate_request_fn(
       name_prefix,
       enum_names,
       locals,
+      names,
     )
   let all_args = locals.config <> ": ClientConfig" <> param_args
 
   // Build path with substitution
   let path_expr =
-    build_path_expr(endpoint.path, path_params, name_prefix, enum_names)
+    build_path_expr(endpoint.path, path_params, name_prefix, enum_names, names)
 
   // Build query string
   let query_section =
-    build_query_section(query_params, name_prefix, enum_names, locals)
+    build_query_section(query_params, name_prefix, enum_names, locals, names)
   let query_apply = case query_params {
     [] -> ""
     _ ->
@@ -406,8 +409,12 @@ fn generate_request_fn(
   // Build request body
   let body_section = case endpoint.request_body {
     Some(body) -> {
-      let encoder =
-        type_ref_encoder_call(locals.body, body.type_ref, name_prefix)
+      // The argument's type follows body_encodable (see body_arg_type); a
+      // caller-built Json goes out as it is.
+      let encoder = case body_encodable(body.type_ref) {
+        True -> type_ref_encoder_call(locals.body, body.type_ref, name_prefix)
+        False -> locals.body
+      }
       "\n  |> request.set_body(json.to_string(" <> encoder <> "))"
     }
     None -> ""
@@ -415,7 +422,7 @@ fn generate_request_fn(
 
   // Build header params
   let header_section =
-    build_header_section(header_params, name_prefix, enum_names)
+    build_header_section(header_params, name_prefix, enum_names, names)
 
   let doc = case endpoint.summary {
     Some(s) -> naming.doc_comment(s)
@@ -474,17 +481,19 @@ fn generate_response_fn(endpoint: Endpoint, name_prefix: String) -> String {
 
   let return_type = case success_response {
     Ok(resp) ->
-      case resp.type_ref {
-        Some(ref) -> type_ref_to_string(ref, name_prefix)
-        None -> "Nil"
+      case resp.type_ref, resp_is_json(resp) {
+        Some(_), False -> "String"
+        Some(ref), True -> type_ref_to_string(ref, name_prefix)
+        None, _ -> "Nil"
       }
     Error(_) -> "Nil"
   }
 
   let decode_body = case success_response {
     Ok(resp) ->
-      case resp.type_ref {
-        Some(ref) -> {
+      case resp.type_ref, resp_is_json(resp) {
+        Some(_), False -> "      Ok(resp.body)"
+        Some(ref), True -> {
           let decoder = type_ref_decoder_call(ref, name_prefix)
           "      case json.parse(resp.body, "
           <> decoder
@@ -493,7 +502,7 @@ fn generate_response_fn(endpoint: Endpoint, name_prefix: String) -> String {
           <> "        Error(_) -> Error(DecodeError(\"Failed to decode response\"))\n"
           <> "      }"
         }
-        None -> "      Ok(Nil)"
+        None, _ -> "      Ok(Nil)"
       }
     Error(_) -> "      Ok(Nil)"
   }
@@ -511,6 +520,32 @@ fn generate_response_fn(endpoint: Endpoint, name_prefix: String) -> String {
   <> "  }\n}"
 }
 
+/// The type the endpoint's decode function returns after parsing JSON: its
+/// first 2xx response's, when that response is JSON.
+fn returned_ref(ep: Endpoint) -> option.Option(TypeRef) {
+  case
+    list.find(ep.responses, fn(r) { string.starts_with(r.status_code, "2") })
+  {
+    Ok(resp) ->
+      case resp_is_json(resp) {
+        True -> resp.type_ref
+        False -> None
+      }
+    Error(_) -> None
+  }
+}
+
+/// Whether a response body is JSON to decode. A file download or a
+/// `text/plain` body is handed back as the text it arrived as; parsing it as
+/// JSON fails on every real response.
+fn resp_is_json(resp: ir.ResponseIR) -> Bool {
+  case resp.type_ref, resp.content_type {
+    Some(Primitive(ir.PBinary)), _ -> False
+    _, Some(ct) -> string.contains(ct, "json")
+    _, None -> True
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -523,13 +558,14 @@ fn build_param_args(
   name_prefix: String,
   enum_names: List(String),
   locals: Locals,
+  names: naming.ParamNames,
 ) -> String {
   // Path params are always required, so no Option wrap.
   let path_args =
     path_params
     |> list.map(fn(p) {
       ", "
-      <> naming.to_field_name(p.name)
+      <> naming.param_name(names, p)
       <> ": "
       <> param_type(p.type_ref, name_prefix, enum_names)
     })
@@ -539,7 +575,7 @@ fn build_param_args(
       False ->
         "Option(" <> param_type(p.type_ref, name_prefix, enum_names) <> ")"
     }
-    ", " <> naming.to_field_name(p.name) <> ": " <> type_str
+    ", " <> naming.param_name(names, p) <> ": " <> type_str
   }
   let body_arg = case body {
     Some(b) -> [
@@ -569,12 +605,25 @@ fn param_type(
   enum_names: List(String),
 ) -> String {
   case ir.strip_optional(ref) {
-    Named(name) ->
-      case list.contains(enum_names, name) {
-        True -> type_ref_to_string(ref, name_prefix)
-        False -> "String"
-      }
-    _ -> type_ref_to_string(ref, name_prefix)
+    Array(item) ->
+      "List(" <> param_scalar_type(item, name_prefix, enum_names) <> ")"
+    other -> param_scalar_type(other, name_prefix, enum_names)
+  }
+}
+
+/// A value that becomes one string. A record, a union, `Dynamic` or a nested
+/// list has no generated way to stringify it, so the caller passes the text.
+fn param_scalar_type(
+  ref: TypeRef,
+  name_prefix: String,
+  enum_names: List(String),
+) -> String {
+  case ir.param_scalar(ref, enum_names) {
+    Named(name) -> name_prefix <> name
+    Primitive(ir.PInt) -> "Int"
+    Primitive(ir.PFloat) -> "Float"
+    Primitive(ir.PBool) -> "Bool"
+    _ -> "String"
   }
 }
 
@@ -583,6 +632,7 @@ fn build_path_expr(
   path_params: List(EndpointParam),
   name_prefix: String,
   enum_names: List(String),
+  names: naming.ParamNames,
 ) -> String {
   case path_params {
     [] -> "\"" <> path <> "\""
@@ -590,7 +640,7 @@ fn build_path_expr(
       list.fold(path_params, "\"" <> path <> "\"", fn(expr, p) {
         let value =
           param_to_string_expr(
-            naming.to_field_name(p.name),
+            naming.param_name(names, p),
             p.type_ref,
             name_prefix,
             enum_names,
@@ -671,6 +721,7 @@ fn build_query_section(
   name_prefix: String,
   enum_names: List(String),
   locals: Locals,
+  names: naming.ParamNames,
 ) -> String {
   case query_params {
     [] -> ""
@@ -678,7 +729,7 @@ fn build_query_section(
       let lines =
         params
         |> list.map(fn(p) {
-          let snake = naming.to_field_name(p.name)
+          let snake = naming.param_name(names, p)
           case is_array_param(p) {
             // ⚠️ One pair per element, not one pair for the list. OpenAPI's
             // default `style: form, explode: true` repeats the key, and the
@@ -761,10 +812,10 @@ type Locals {
   )
 }
 
-fn build_locals(endpoint: Endpoint) -> Locals {
+fn build_locals(endpoint: Endpoint, names: naming.ParamNames) -> Locals {
   let taken =
     endpoint.parameters
-    |> list.map(fn(p) { naming.to_field_name(p.name) })
+    |> list.map(naming.param_name(names, _))
 
   Locals(
     path: fresh_name("path", taken),
@@ -810,10 +861,11 @@ fn build_header_section(
   header_params: List(EndpointParam),
   name_prefix: String,
   enum_names: List(String),
+  names: naming.ParamNames,
 ) -> String {
   header_params
   |> list.map(fn(p) {
-    let snake = naming.to_field_name(p.name)
+    let snake = naming.param_name(names, p)
     case p.required {
       True -> {
         let value =
@@ -913,9 +965,9 @@ fn type_ref_encoder_call(
     Nullable(inner) | Optional(inner) ->
       "case "
       <> expr
-      <> " { Some(v) -> "
+      <> " { option.Some(v) -> "
       <> type_ref_encoder_call("v", inner, name_prefix)
-      <> " None -> json.null() }"
+      <> " option.None -> json.null() }"
     ir.Literal(value) -> "json.string(\"" <> value <> "\")"
     // freeform object / dictionary bodies have no schema to encode against, so
     // the caller supplies a `Json` value and we pass it through unchanged
@@ -951,7 +1003,7 @@ fn type_ref_decoder_call(ref: TypeRef, name_prefix: String) -> String {
     Named(name) -> name_prefix <> to_snake_case(name) <> "_decoder()"
     Primitive(ir.PString) -> "decode.string"
     Primitive(ir.PInt) -> "decode.int"
-    Primitive(ir.PFloat) -> "decode.float"
+    Primitive(ir.PFloat) -> gleam_types.float_decoder
     Primitive(ir.PBool) -> "decode.bool"
     Primitive(ir.PDateTime) | Primitive(ir.PDate) | ir.Literal(_) ->
       "decode.string"

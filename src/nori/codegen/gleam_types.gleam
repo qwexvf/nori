@@ -4,8 +4,11 @@
 //// type definitions, JSON decoders (using gleam/dynamic/decode), and JSON
 //// encoders (using gleam/json).
 
+import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import nori/codegen/gleam_constraints
 import nori/codegen/ir.{
@@ -18,18 +21,19 @@ import nori/codegen/naming
 
 /// Generates a complete Gleam module string from the CodegenIR.
 pub fn generate(ir: CodegenIR) -> String {
+  let variants = variant_names(ir.types)
   let type_defs =
     ir.types
-    |> list.map(generate_type_def)
+    |> list.map(generate_type_def(_, variants))
     |> string.join("\n\n")
   let decoders =
     ir.types
-    |> list.map(generate_decoder)
+    |> list.map(generate_decoder(_, variants))
     |> list.filter(fn(s) { s != "" })
     |> string.join("\n\n")
   let encoders =
     ir.types
-    |> list.map(generate_encoder)
+    |> list.map(generate_encoder(_, variants))
     |> list.filter(fn(s) { s != "" })
     |> string.join("\n\n")
   // Constraint checks call list.length and string.to_utf_codepoints; whether
@@ -39,6 +43,7 @@ pub fn generate(ir: CodegenIR) -> String {
       ir,
       string.contains(decoders, "list.length("),
       string.contains(decoders, "string.to_utf_codepoints("),
+      string.contains(decoders, "int.to_float"),
     )
 
   string.join([header, "", type_defs, "", decoders, "", encoders, ""], "\n")
@@ -57,6 +62,7 @@ fn generate_header(
   ir: CodegenIR,
   checks_use_list: Bool,
   checks_use_string: Bool,
+  decodes_number: Bool,
 ) -> String {
   let title_comment = "//// Generated from " <> ir.title <> " v" <> ir.version
 
@@ -97,6 +103,10 @@ fn generate_header(
         True -> ["import gleam/string"]
         False -> []
       }
+      let int_import = case decodes_number {
+        True -> ["import gleam/int"]
+        False -> []
+      }
       let lines =
         list.flatten([
           [title_comment, ""],
@@ -105,8 +115,9 @@ fn generate_header(
           dynamic_import,
           [
             "import gleam/dynamic/decode.{type Decoder}",
-            "import gleam/json.{type Json}",
           ],
+          int_import,
+          ["import gleam/json.{type Json}"],
           option_import,
           list_import,
           string_import,
@@ -197,6 +208,94 @@ fn ref_uses_unknown(ref: TypeRef) -> Bool {
 }
 
 // ---------------------------------------------------------------------------
+// Union variant names
+// ---------------------------------------------------------------------------
+
+/// Each union's members paired with their constructor, keyed by union name.
+type Variants =
+  dict.Dict(String, List(#(TypeRef, String)))
+
+/// A member's constructor is `<Member>Variant`, unless another constructor in
+/// the module has that name: constructors share one namespace, so two unions
+/// that both have a string member, or both include `Cat`, would each define
+/// `StringVariant` or `CatVariant`. Only the colliding ones are prefixed with
+/// their union's name, so output that compiled before keeps its names.
+fn variant_names(types: List(TypeDef)) -> Variants {
+  let unqualified =
+    list.filter_map(types, fn(td) {
+      case td {
+        UnionType(name, members, _, _) ->
+          Ok(#(name, members, unique_within(members)))
+        _ -> Error(Nil)
+      }
+    })
+  let others =
+    list.flat_map(types, fn(td) {
+      case td {
+        RecordType(name, ..) -> [name]
+        EnumType(_, variants, _) -> list.map(variants, fn(v) { v.name })
+        _ -> []
+      }
+    })
+  let counts =
+    unqualified
+    |> list.flat_map(fn(u) { u.2 })
+    |> list.append(others)
+    |> list.fold(dict.new(), fn(acc, n) {
+      dict.upsert(acc, n, fn(c) { option.unwrap(c, 0) + 1 })
+    })
+  unqualified
+  |> list.map(fn(u) {
+    let #(union, members, ctors) = u
+    let ctors =
+      list.map(ctors, fn(ctor) {
+        case dict.get(counts, ctor) {
+          Ok(1) -> ctor
+          _ -> union <> ctor
+        }
+      })
+    #(union, list.zip(members, ctors))
+  })
+  |> dict.from_list
+}
+
+/// `<Member>Variant` for each member, numbered when two members of the same
+/// union would get the same name (two inline objects are both `Dynamic`).
+fn unique_within(members: List(TypeRef)) -> List(String) {
+  members
+  |> list.fold(#([], dict.new()), fn(state, member) {
+    let #(names, seen) = state
+    let base = member_name(member) <> "Variant"
+    let earlier = dict.get(seen, base) |> result.unwrap(0)
+    let name = case earlier {
+      0 -> base
+      n -> base <> int.to_string(n + 1)
+    }
+    #([name, ..names], dict.insert(seen, base, earlier + 1))
+  })
+  |> fn(state) { list.reverse(state.0) }
+}
+
+/// A member type as a word that can start a constructor name.
+fn member_name(ref: TypeRef) -> String {
+  case ref {
+    Named(name) -> name
+    Primitive(PDateTime) -> "DateTime"
+    Primitive(PDate) -> "Date"
+    Primitive(p) -> primitive_to_string(p)
+    Array(item) -> member_name(item) <> "List"
+    Dict(_, value) -> member_name(value) <> "Dict"
+    Nullable(inner) | Optional(inner) -> "Optional" <> member_name(inner)
+    Literal(_) -> "String"
+    Unknown -> "Dynamic"
+  }
+}
+
+fn union_variants(variants: Variants, union: String) -> List(#(TypeRef, String)) {
+  dict.get(variants, union) |> result.unwrap([])
+}
+
+// ---------------------------------------------------------------------------
 // Type reference to Gleam type string
 // ---------------------------------------------------------------------------
 
@@ -235,22 +334,38 @@ fn primitive_to_string(p: PrimitiveType) -> String {
 // Type definition generation
 // ---------------------------------------------------------------------------
 
-fn generate_type_def(typedef: TypeDef) -> String {
+fn generate_type_def(typedef: TypeDef, variants: Variants) -> String {
   case typedef {
     RecordType(name, fields, description) ->
-      generate_record_type(name, fields, description)
+      generate_record_type(name, labelled(fields), description)
     EnumType(name, variants, description) ->
       generate_enum_type(name, variants, description)
-    UnionType(name, members, _discriminator, description) ->
-      generate_union_type(name, members, description)
+    UnionType(name, _, _discriminator, description) ->
+      generate_union_type(name, union_variants(variants, name), description)
     AliasType(name, target, description) ->
       generate_alias_type(name, target, description)
   }
 }
 
+/// A record's fields paired with their labels. The type, the decoder and the
+/// encoder must use the same label for each field, so all three take this.
+type Labelled =
+  List(#(Field, String))
+
+fn labelled(fields: List(Field)) -> Labelled {
+  list.zip(
+    fields,
+    naming.unique_field_names(list.map(fields, fn(f) { f.name })),
+  )
+}
+
+fn labels(fields: Labelled) -> List(String) {
+  list.map(fields, fn(pair) { pair.1 })
+}
+
 fn generate_record_type(
   name: String,
-  fields: List(Field),
+  fields: Labelled,
   description: Option(String),
 ) -> String {
   let doc = case description {
@@ -259,9 +374,8 @@ fn generate_record_type(
   }
   let field_strs =
     fields
-    |> list.map(fn(f) {
-      let field_type = field_type_string(f)
-      "    " <> naming.to_field_name(f.name) <> ": " <> field_type
+    |> list.map(fn(pair) {
+      "    " <> pair.1 <> ": " <> field_type_string(pair.0)
     })
     |> string.join(",\n")
 
@@ -350,7 +464,7 @@ fn generate_enum_to_string(name: String, variants: List(EnumVariant)) -> String 
 
 fn generate_union_type(
   name: String,
-  members: List(TypeRef),
+  members: List(#(TypeRef, String)),
   description: Option(String),
 ) -> String {
   let doc = case description {
@@ -359,10 +473,7 @@ fn generate_union_type(
   }
   let variant_strs =
     members
-    |> list.map(fn(m) {
-      let type_name = type_ref_to_string(m)
-      "  " <> type_name <> "Variant(" <> type_name <> ")"
-    })
+    |> list.map(fn(m) { "  " <> m.1 <> "(" <> type_ref_to_string(m.0) <> ")" })
     |> string.join("\n")
 
   doc <> "pub type " <> name <> " {\n" <> variant_strs <> "\n}"
@@ -384,39 +495,55 @@ fn generate_alias_type(
 // Decoder generation
 // ---------------------------------------------------------------------------
 
-fn generate_decoder(typedef: TypeDef) -> String {
+fn generate_decoder(typedef: TypeDef, variants: Variants) -> String {
   case typedef {
-    RecordType(name, fields, _) -> generate_record_decoder(name, fields)
-    EnumType(name, variants, _) -> generate_enum_decoder(name, variants)
-    UnionType(name, members, discriminator, _) ->
-      generate_union_decoder(name, members, discriminator)
-    AliasType(..) -> ""
+    RecordType(name, fields, _) ->
+      generate_record_decoder(name, labelled(fields))
+    EnumType(name, enum_variants, _) ->
+      generate_enum_decoder(name, enum_variants)
+    UnionType(name, _, discriminator, _) ->
+      generate_union_decoder(
+        name,
+        union_variants(variants, name),
+        discriminator,
+      )
+    AliasType(name, target, _) -> generate_alias_decoder(name, target)
   }
 }
 
-/// The names of a union's members, or `Error` when any member is not a named
-/// type. A member like a list or a primitive has no constructor name that
-/// compiles (`List(String)Variant`), so those unions get a type and nothing
-/// that would have to name the members.
-fn named_members(members: List(TypeRef)) -> Result(List(String), Nil) {
-  list.try_map(members, fn(m) {
-    case m {
-      Named(name) -> Ok(name)
-      _ -> Error(Nil)
-    }
-  })
+/// Other types call `<alias>_decoder()` like any named type's, so an alias
+/// needs one even though its type is just the target's.
+fn generate_alias_decoder(name: String, target: TypeRef) -> String {
+  "pub fn "
+  <> to_snake_case(name)
+  <> "_decoder() -> Decoder("
+  <> name
+  <> ") {\n  "
+  <> type_ref_decoder(target, "")
+  <> "\n}"
 }
 
 fn generate_union_decoder(
   name: String,
-  members: List(TypeRef),
+  members: List(#(TypeRef, String)),
   discriminator: Option(ir.Discriminator),
 ) -> String {
-  case named_members(members), discriminator {
-    Ok([first, ..rest]), None -> untagged_union_decoder(name, first, rest)
-    Ok(names), Some(d) -> tagged_union_decoder(name, names, d)
-    _, _ -> ""
+  case members, discriminator {
+    [first, ..rest], None -> untagged_union_decoder(name, first, rest)
+    // A discriminator whose members are all inline schemas maps no tag to any
+    // member (the capability check reports it). Trying each member still
+    // decodes, and the union's type needs a decoder either way: other types
+    // call it.
+    [first, ..rest], Some(d) ->
+      tagged_union_decoder(name, members, d)
+      |> result.lazy_unwrap(fn() { untagged_union_decoder(name, first, rest) })
+    [], _ -> ""
   }
+}
+
+/// Decodes one member and wraps it in its constructor.
+fn member_decoder(member: #(TypeRef, String)) -> String {
+  type_ref_decoder(member.0, "") <> " |> decode.map(" <> member.1 <> ")"
 }
 
 /// Tries each member in order and keeps the first that decodes, which is what
@@ -424,15 +551,12 @@ fn generate_union_decoder(
 /// match, but checking that would decode every member every time.
 fn untagged_union_decoder(
   name: String,
-  first: String,
-  rest: List(String),
+  first: #(TypeRef, String),
+  rest: List(#(TypeRef, String)),
 ) -> String {
-  let variant = fn(member) {
-    to_snake_case(member) <> "_decoder() |> decode.map(" <> member <> "Variant)"
-  }
   let others =
     rest
-    |> list.map(fn(m) { "    " <> variant(m) <> ",\n" })
+    |> list.map(fn(m) { "    " <> member_decoder(m) <> ",\n" })
     |> string.concat
 
   "pub fn "
@@ -440,7 +564,7 @@ fn untagged_union_decoder(
   <> "_decoder() -> Decoder("
   <> name
   <> ") {\n  decode.one_of(\n    "
-  <> variant(first)
+  <> member_decoder(first)
   <> ",\n    [\n"
   <> string.replace(others, "    ", "      ")
   <> "    ],\n  )\n}"
@@ -455,15 +579,15 @@ fn untagged_union_decoder(
 /// after the tag error.
 fn tagged_union_decoder(
   name: String,
-  names: List(String),
+  members: List(#(TypeRef, String)),
   d: ir.Discriminator,
-) -> String {
+) -> Result(String, Nil) {
   let arms =
-    list.filter_map(names, fn(member) {
+    list.filter_map(members, fn(member) {
       let tags =
         list.filter_map(d.mapping, fn(pair) {
-          case pair.1 == Named(member) {
-            True -> Ok(string_literal(pair.0))
+          case pair.1 == member.0 {
+            True -> Ok(naming.string_literal(pair.0))
             False -> Error(Nil)
           }
         })
@@ -473,7 +597,7 @@ fn tagged_union_decoder(
       }
     })
   case list.reverse(arms) {
-    [] -> ""
+    [] -> Error(Nil)
     [#(_, last), ..earlier_reversed] -> {
       let all_tags = list.flat_map(arms, fn(arm) { arm.0 })
       let dispatch =
@@ -482,88 +606,117 @@ fn tagged_union_decoder(
           "    "
           <> string.join(arm.0, " | ")
           <> " ->\n      "
-          <> to_snake_case(arm.1)
-          <> "_decoder() |> decode.map("
-          <> arm.1
-          <> "Variant)\n"
+          <> member_decoder(arm.1)
+          <> "\n"
         })
         |> string.concat
-      "pub fn "
-      <> to_snake_case(name)
-      <> "_decoder() -> Decoder("
-      <> name
-      <> ") {\n  use tag <- decode.field(\n    "
-      <> string_literal(d.property)
-      <> ",\n    decode.string\n      |> decode.then(fn(tag) {\n        case tag {\n          "
-      <> string.join(all_tags, " | ")
-      <> " -> decode.success(tag)\n          _ -> decode.failure(tag, "
-      <> string_literal(name <> "." <> d.property)
-      <> ")\n        }\n      }),\n  )\n  case tag {\n"
-      <> dispatch
-      <> "    _ -> "
-      <> to_snake_case(last)
-      <> "_decoder() |> decode.map("
-      <> last
-      <> "Variant)\n  }\n}"
+      Ok(
+        "pub fn "
+        <> to_snake_case(name)
+        <> "_decoder() -> Decoder("
+        <> name
+        <> ") {\n  use tag <- decode.field(\n    "
+        <> naming.string_literal(d.property)
+        <> ",\n    decode.string\n      |> decode.then(fn(tag) {\n        case tag {\n          "
+        <> string.join(all_tags, " | ")
+        <> " -> decode.success(tag)\n          _ -> decode.failure(tag, "
+        <> naming.string_literal(name <> "." <> d.property)
+        <> ")\n        }\n      }),\n  )\n  case tag {\n"
+        <> dispatch
+        <> "    _ -> "
+        <> member_decoder(last)
+        <> "\n  }\n}",
+      )
     }
   }
 }
 
-fn string_literal(value: String) -> String {
-  let escaped =
-    value
-    |> string.replace("\\", "\\\\")
-    |> string.replace("\"", "\\\"")
-  "\"" <> escaped <> "\""
-}
-
-fn generate_record_decoder(name: String, fields: List(Field)) -> String {
+fn generate_record_decoder(name: String, fields: Labelled) -> String {
   let fn_name = to_snake_case(name) <> "_decoder"
-  let field_lines =
-    fields
-    |> list.map(fn(f) {
-      let snake = naming.to_field_name(f.name)
-      let decoder_expr = constrained_decoder(f.type_ref, f.constraints, "")
-      case f.required {
-        True ->
-          "  use "
-          <> snake
-          <> " <- decode.field(\""
-          <> f.name
-          <> "\", "
-          <> decoder_expr
-          <> ")"
-        False ->
-          "  use "
-          <> snake
-          <> " <- decode.optional_field(\""
-          <> f.name
-          <> "\", None, decode.optional("
-          <> decoder_expr
-          <> "))"
-      }
-    })
-    |> string.join("\n")
-
+  // Label shorthand: each field was bound under its own label.
   let constructor_args =
     fields
-    |> list.map(fn(f) {
-      naming.to_field_name(f.name) <> ": " <> naming.to_field_name(f.name)
-    })
+    |> labels
+    |> list.map(fn(label) { label <> ":" })
     |> string.join(", ")
+  let success =
+    "  decode.success(" <> name <> "(" <> constructor_args <> "))\n}"
 
-  "pub fn "
-  <> fn_name
-  <> "() -> Decoder("
-  <> name
-  <> ") {\n"
-  <> field_lines
-  <> "\n"
-  <> "  decode.success("
-  <> name
-  <> "("
-  <> constructor_args
-  <> "))\n}"
+  case list.length(fields) > max_use_chain {
+    False ->
+      "pub fn "
+      <> fn_name
+      <> "() -> Decoder("
+      <> name
+      <> ") {\n"
+      <> field_use_lines(fields)
+      <> "\n"
+      <> success
+    // Each `use` nests a closure, and the Gleam compiler (1.18) overflows its
+    // stack around 200 of them: Twilio's CreateSiprecRequest has over 200
+    // fields. Each part decodes a slice of fields into a tuple, so no chain is
+    // longer than `max_use_chain`.
+    True -> {
+      let parts = list.sized_chunk(fields, max_use_chain)
+      let part_name = fn(i) { fn_name <> "_part_" <> int.to_string(i + 1) }
+      let tuple = fn(part: Labelled) {
+        "#(" <> string.join(labels(part), ", ") <> ")"
+      }
+      let main =
+        "pub fn "
+        <> fn_name
+        <> "() -> Decoder("
+        <> name
+        <> ") {\n"
+        <> parts
+        |> list.index_map(fn(part, i) {
+          "  use " <> tuple(part) <> " <- decode.then(" <> part_name(i) <> "())"
+        })
+        |> string.join("\n")
+        <> "\n"
+        <> success
+      let helpers =
+        list.index_map(parts, fn(part, i) {
+          "fn "
+          <> part_name(i)
+          <> "() {\n"
+          <> field_use_lines(part)
+          <> "\n  decode.success("
+          <> tuple(part)
+          <> ")\n}"
+        })
+      string.join([main, ..helpers], "\n\n")
+    }
+  }
+}
+
+const max_use_chain = 64
+
+fn field_use_lines(fields: Labelled) -> String {
+  fields
+  |> list.map(fn(pair) {
+    let #(f, snake) = pair
+    let decoder_expr = constrained_decoder(f.type_ref, f.constraints, "")
+    case f.required {
+      True ->
+        "  use "
+        <> snake
+        <> " <- decode.field("
+        <> naming.string_literal(f.name)
+        <> ", "
+        <> decoder_expr
+        <> ")"
+      False ->
+        "  use "
+        <> snake
+        <> " <- decode.optional_field("
+        <> naming.string_literal(f.name)
+        <> ", None, decode.optional("
+        <> decoder_expr
+        <> "))"
+    }
+  })
+  |> string.join("\n")
 }
 
 /// The decoder for `ref`, rejecting values its constraints rule out. An
@@ -632,11 +785,16 @@ fn type_ref_decoder(ref: TypeRef, q: String) -> String {
   }
 }
 
+/// Decodes a JSON `number`. On Erlang `decode.float` rejects a value written
+/// without a fraction (`1`), which a `number` field legitimately holds, so an
+/// integer is accepted and converted. The module using it imports `gleam/int`.
+pub const float_decoder = "decode.one_of(decode.float, [decode.int |> decode.map(int.to_float)])"
+
 fn primitive_decoder(p: PrimitiveType) -> String {
   case p {
     PString -> "decode.string"
     PInt -> "decode.int"
-    PFloat -> "decode.float"
+    PFloat -> float_decoder
     PBool -> "decode.bool"
     PDateTime -> "decode.string"
     PDate -> "decode.string"
@@ -677,31 +835,73 @@ fn generate_enum_decoder(name: String, variants: List(EnumVariant)) -> String {
 // Encoder generation
 // ---------------------------------------------------------------------------
 
-fn generate_encoder(typedef: TypeDef) -> String {
+fn generate_encoder(typedef: TypeDef, variants: Variants) -> String {
   case typedef {
-    RecordType(name, fields, _) -> generate_record_encoder(name, fields)
+    RecordType(name, fields, _) ->
+      generate_record_encoder(name, labelled(fields))
     EnumType(name, _variants, _) -> generate_enum_encoder(name)
-    UnionType(name, members, _, _) -> generate_union_encoder(name, members)
-    AliasType(..) -> ""
+    UnionType(name, _, _, _) ->
+      generate_union_encoder(name, union_variants(variants, name))
+    AliasType(name, target, _) -> generate_alias_encoder(name, target)
   }
 }
 
-fn generate_record_encoder(name: String, fields: List(Field)) -> String {
+fn generate_alias_encoder(name: String, target: TypeRef) -> String {
+  let param = case encoder_reads_value(target) {
+    True -> "value"
+    False -> "_value"
+  }
+  "pub fn encode_"
+  <> to_snake_case(name)
+  <> "("
+  <> param
+  <> ": "
+  <> name
+  <> ") -> Json {\n  "
+  <> type_ref_encoder("value", target)
+  <> "\n}"
+}
+
+/// False when `type_ref_encoder` ignores its expression, so the binding it
+/// would read is named `_` instead of warning as unused.
+fn encoder_reads_value(ref: TypeRef) -> Bool {
+  case ref {
+    Unknown | Literal(_) | Primitive(PBinary) | Primitive(PUnit) -> False
+    _ -> True
+  }
+}
+
+/// `name`, or `_` when the encoder for `ref` would never read it.
+fn binding(name: String, ref: TypeRef) -> String {
+  case encoder_reads_value(ref) {
+    True -> name
+    False -> "_"
+  }
+}
+
+fn generate_record_encoder(name: String, fields: Labelled) -> String {
   let fn_name = "encode_" <> to_snake_case(name)
   let field_encoders =
     fields
-    |> list.map(fn(f) {
-      let snake = naming.to_field_name(f.name)
+    |> list.map(fn(pair) {
+      let #(f, snake) = pair
       let encoder_expr = type_ref_encoder("value." <> snake, f.type_ref)
       case f.required {
-        True -> "    #(\"" <> f.name <> "\", " <> encoder_expr <> ")"
+        True ->
+          "    #("
+          <> naming.string_literal(f.name)
+          <> ", "
+          <> encoder_expr
+          <> ")"
         False ->
-          "    #(\""
-          <> f.name
-          <> "\", case value."
+          "    #("
+          <> naming.string_literal(f.name)
+          <> ", case value."
           <> snake
           <> " {\n"
-          <> "      Some(v) -> "
+          <> "      Some("
+          <> binding("v", f.type_ref)
+          <> ") -> "
           <> type_ref_encoder("v", f.type_ref)
           <> "\n"
           <> "      None -> json.null()\n"
@@ -710,9 +910,20 @@ fn generate_record_encoder(name: String, fields: List(Field)) -> String {
     })
     |> string.join(",\n")
 
+  let param = case
+    list.any(fields, fn(pair) {
+      let #(f, _) = pair
+      !f.required || encoder_reads_value(f.type_ref)
+    })
+  {
+    True -> "value"
+    False -> "_value"
+  }
   "pub fn "
   <> fn_name
-  <> "(value: "
+  <> "("
+  <> param
+  <> ": "
   <> name
   <> ") -> Json {\n"
   <> "  json.object([\n"
@@ -727,7 +938,9 @@ fn type_ref_encoder(expr: String, ref: TypeRef) -> String {
     Array(item) ->
       "json.array("
       <> expr
-      <> ", fn(item) { "
+      <> ", fn("
+      <> binding("item", item)
+      <> ") { "
       <> type_ref_encoder("item", item)
       <> " })"
     Dict(_, value) ->
@@ -736,36 +949,41 @@ fn type_ref_encoder(expr: String, ref: TypeRef) -> String {
       <> " |> dict.to_list |> list.map(fn(pair) { #(pair.0, "
       <> type_ref_encoder("pair.1", value)
       <> ") }))"
-    Nullable(inner) ->
+    Nullable(inner) | Optional(inner) ->
       "case "
       <> expr
-      <> " { Some(v) -> "
+      <> " { Some("
+      <> binding("v", inner)
+      <> ") -> "
       <> type_ref_encoder("v", inner)
       <> " None -> json.null() }"
-    Optional(inner) ->
-      "case "
-      <> expr
-      <> " { Some(v) -> "
-      <> type_ref_encoder("v", inner)
-      <> " None -> json.null() }"
-    Literal(value) -> "json.string(\"" <> value <> "\")"
+    Literal(value) -> "json.string(" <> naming.string_literal(value) <> ")"
     Unknown -> "json.null()"
   }
 }
 
 /// Each member encodes itself. A tagged member's own schema declares the tag
 /// property (OpenAPI requires it), so its encoder already writes the tag.
-fn generate_union_encoder(name: String, members: List(TypeRef)) -> String {
-  case named_members(members) {
-    Ok([_, ..] as names) -> {
+fn generate_union_encoder(
+  name: String,
+  members: List(#(TypeRef, String)),
+) -> String {
+  case members {
+    [_, ..] -> {
       let arms =
-        names
+        members
         |> list.map(fn(member) {
+          let binding = case encoder_reads_value(member.0) {
+            True -> "v"
+            False -> "_"
+          }
           "    "
-          <> member
-          <> "Variant(v) -> encode_"
-          <> to_snake_case(member)
-          <> "(v)\n"
+          <> member.1
+          <> "("
+          <> binding
+          <> ") -> "
+          <> type_ref_encoder("v", member.0)
+          <> "\n"
         })
         |> string.concat
       "pub fn encode_"
@@ -776,7 +994,7 @@ fn generate_union_encoder(name: String, members: List(TypeRef)) -> String {
       <> arms
       <> "  }\n}"
     }
-    _ -> ""
+    [] -> ""
   }
 }
 

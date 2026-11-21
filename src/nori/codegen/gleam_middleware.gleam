@@ -68,12 +68,27 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
       <> "// import your_app/generated/routes"
     prefix -> "import " <> prefix <> "/routes"
   }
-  string.join(
+  // Only Basic credentials are base64-decoded.
+  let bit_array_import = case
+    list.any(ir.security_schemes, fn(scheme) {
+      case scheme {
+        ir.BasicAuth(..) -> True
+        _ -> False
+      }
+    })
+  {
+    True -> ["import gleam/bit_array"]
+    False -> []
+  }
+  [
     [
       title_comment,
       "////",
       "//// Auth extractors, route guards, and composable middleware.",
       "",
+    ],
+    bit_array_import,
+    [
       "import gleam/http",
       "import gleam/http/request.{type Request}",
       "import gleam/http/response.{type Response}",
@@ -82,8 +97,9 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
       "import gleam/string",
       routes_import,
     ],
-    "\n",
-  )
+  ]
+  |> list.flatten
+  |> string.join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -277,21 +293,9 @@ fn generate_api_key_extractor(
       "cookie",
       string.join(
         [
-          "  // Extract from cookie: " <> param_name,
-          "  case request.get_header(req, \"cookie\") {",
-          "    Ok(cookie_header) -> {",
-          "      case string.contains(cookie_header, \""
-            <> param_name
-            <> "=\") {",
-          "        True -> {",
-          "          // TODO: Implement proper cookie parsing",
-          "          Error(Nil)",
-          "        }",
-          "        False -> Error(Nil)",
-          "      }",
-          "    }",
-          "    Error(_) -> Error(Nil)",
-          "  }",
+          "  list.key_find(request.get_cookies(req), "
+          <> naming.string_literal(param_name)
+          <> ")",
         ],
         "\n",
       ),
@@ -327,20 +331,16 @@ fn generate_basic_extractor(name: String) -> String {
         <> fn_name
         <> "(req: Request(a)) -> Result(#(String, String), Nil) {",
       "  case request.get_header(req, \"authorization\") {",
-      "    Ok(value) -> {",
-      "      case string.starts_with(value, \"Basic \") {",
-      "        True -> {",
-      "          let encoded = string.drop_start(value, 6)",
-      "          // TODO: Decode base64 and split on \":\"",
-      "          // let decoded = base64.decode(encoded)",
-      "          // case string.split_once(decoded, \":\") { ... }",
-      "          let _ = encoded",
-      "          Error(Nil)",
-      "        }",
-      "        False -> Error(Nil)",
+      "    Ok(\"Basic \" <> encoded) | Ok(\"basic \" <> encoded) ->",
+      "      case bit_array.base64_decode(encoded) {",
+      "        Ok(bits) ->",
+      "          case bit_array.to_string(bits) {",
+      "            Ok(credentials) -> string.split_once(credentials, \":\")",
+      "            Error(_) -> Error(Nil)",
+      "          }",
+      "        Error(_) -> Error(Nil)",
       "      }",
-      "    }",
-      "    Error(_) -> Error(Nil)",
+      "    _ -> Error(Nil)",
       "  }",
       "}",
       "",
@@ -437,9 +437,18 @@ fn generate_is_public_route(ir: CodegenIR, module_prefix: String) -> String {
       let public_cases =
         endpoints
         |> list.map(fn(ep) {
+          // A route with path parameters is a constructor with fields, which
+          // a bare name does not match.
+          let fields = case
+            list.any(ep.parameters, fn(p) { p.location == ir.PathParam })
+          {
+            True -> "(..)"
+            False -> ""
+          }
           "    "
           <> variant_prefix
           <> to_pascal_case(ep.operation_id)
+          <> fields
           <> " -> True"
         })
         |> string.join("\n")

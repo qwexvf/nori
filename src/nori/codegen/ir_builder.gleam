@@ -8,11 +8,14 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option}
 import gleam/result
+import gleam/set
 import gleam/string
 import nori/codegen/ir
 import nori/codegen/naming
 import nori/components
+import nori/decoder
 import nori/document.{type Document}
+import nori/encoder
 import nori/operation.{type Operation, type PathItem}
 import nori/parameter.{type Parameter}
 import nori/paths
@@ -48,7 +51,10 @@ pub fn build(doc: Document) -> ir.CodegenIR {
 
 /// Builds a CodegenIR with the given options.
 pub fn build_with(doc: Document, options: BuildOptions) -> ir.CodegenIR {
-  let doc = hoist_operation_schemas(doc, options.inline_enums)
+  let doc =
+    doc
+    |> rename_colliding_schemas
+    |> hoist_operation_schemas(options.inline_enums)
   let types =
     build_types(doc, options.inline_enums)
     |> fn(types) {
@@ -72,6 +78,94 @@ pub fn build_with(doc: Document, options: BuildOptions) -> ir.CodegenIR {
     security_schemes: security_schemes,
     global_security: global_security,
   )
+}
+
+// ---------------------------------------------------------------------------
+// Schema names that collide as type names
+// ---------------------------------------------------------------------------
+
+/// Two component schemas whose names differ only in what `to_type_name` drops
+/// (`Fields` and `fields` in Jira's spec) would define one type twice. The
+/// later one, in sorted order, is renamed to a free name and every `$ref` to
+/// it rewritten.
+///
+/// References are spread over every part of the document, so they are
+/// rewritten in its JSON form, where each is a quoted string starting with
+/// `"#/components/schemas/`, instead of with a walker per object type. Only a
+/// colliding spec pays for the re-encode.
+fn rename_colliding_schemas(doc: Document) -> Document {
+  let renames = case doc.components {
+    option.Some(c) -> colliding_renames(c.schemas)
+    option.None -> dict.new()
+  }
+  case dict.is_empty(renames) {
+    True -> doc
+    False -> {
+      let source =
+        dict.fold(
+          renames,
+          json.to_string(encoder.encode_document(doc)),
+          fn(source, old, new) {
+            source
+            |> string.replace(ref_prefix(old) <> "\"", ref_prefix(new) <> "\"")
+            |> string.replace(ref_prefix(old) <> "/", ref_prefix(new) <> "/")
+          },
+        )
+      case json.parse(source, decoder.document_decoder()) {
+        Ok(renamed) ->
+          document.Document(
+            ..renamed,
+            components: option.map(renamed.components, fn(c) {
+              components.Components(
+                ..c,
+                schemas: rename_keys(c.schemas, renames),
+              )
+            }),
+          )
+        Error(_) -> doc
+      }
+    }
+  }
+}
+
+/// Old schema key to new, for every key whose type name an earlier key (in
+/// sorted order) already has.
+fn colliding_renames(
+  schemas: dict.Dict(String, Schema),
+) -> dict.Dict(String, String) {
+  let #(renames, _, _) =
+    dict.keys(schemas)
+    |> list.sort(string.compare)
+    |> list.fold(#(dict.new(), set.new(), new_pool(schemas)), fn(state, key) {
+      let #(renames, seen, pool) = state
+      let type_name = naming.to_type_name(key)
+      case set.contains(seen, type_name) {
+        False -> #(renames, set.insert(seen, type_name), pool)
+        True -> {
+          let new_key = unused_name(key, pool, 2)
+          #(
+            dict.insert(renames, key, new_key),
+            set.insert(seen, naming.to_type_name(new_key)),
+            pool_insert(pool, new_key, schema.empty()),
+          )
+        }
+      }
+    })
+  renames
+}
+
+/// The start of a JSON-encoded `$ref` to component schema `name`.
+fn ref_prefix(name: String) -> String {
+  "\"#/components/schemas/" <> name
+}
+
+fn rename_keys(
+  d: dict.Dict(String, a),
+  renames: dict.Dict(String, String),
+) -> dict.Dict(String, a) {
+  dict.fold(d, dict.new(), fn(acc, key, value) {
+    dict.insert(acc, result.unwrap(dict.get(renames, key), key), value)
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -191,7 +285,34 @@ fn build_all_of_type(
     |> list.map(fn(f) {
       ir.Field(..f, required: f.required || list.contains(required, f.name))
     })
-  ir.RecordType(name: name, fields: fields, description: s.description)
+  // An `allOf` that brings no fields is one value under several constraints:
+  // `[$ref: X]` is X under another name, and Cloudflare's
+  // `[{type: string}, $ref: timestamp]` is the timestamp. A record without
+  // fields does not parse, so it becomes an alias of the referenced member, or
+  // of the first one when none is a reference.
+  case fields {
+    [] ->
+      ir.AliasType(
+        name: name,
+        target: all_of_target(s.all_of),
+        description: s.description,
+      )
+    _ -> ir.RecordType(name: name, fields: fields, description: s.description)
+  }
+}
+
+fn all_of_target(members: List(reference.Ref(Schema))) -> ir.TypeRef {
+  let referenced =
+    list.find(members, fn(member) {
+      case member {
+        reference.Reference(_) -> True
+        reference.Inline(_) -> False
+      }
+    })
+  case referenced, members {
+    Ok(member), _ | Error(_), [member, ..] -> ref_schema_to_typeref(member)
+    Error(_), [] -> ir.Unknown
+  }
 }
 
 /// Fields and `required` names from each member of `s.all_of`. `seen` holds
@@ -301,9 +422,26 @@ fn dedupe_last_wins(fields: List(ir.Field)) -> List(ir.Field) {
 /// "#/components/schemas/Card" → "Card", the key in `components.schemas`.
 fn ref_component_name(ref_str: String) -> String {
   case string.split(ref_str, "/") {
-    [_, _, _, name] -> name
+    [_, _, _, name] -> unescape_pointer(name)
     _ -> ref_str
   }
+}
+
+/// A `$ref` to component schema `name`. A hoisted name can contain `/`
+/// (Cloudflare has a property called `application/json`), which a JSON
+/// pointer has to escape or the reference points somewhere else.
+fn schema_ref(name: String) -> String {
+  let escaped =
+    name
+    |> string.replace("~", "~0")
+    |> string.replace("/", "~1")
+  "#/components/schemas/" <> escaped
+}
+
+fn unescape_pointer(segment: String) -> String {
+  segment
+  |> string.replace("~1", "/")
+  |> string.replace("~0", "~")
 }
 
 fn build_union_type(
@@ -440,18 +578,18 @@ fn hoist_inline_objects(
   schemas: dict.Dict(String, Schema),
   inline_enums: Bool,
 ) -> dict.Dict(String, Schema) {
-  dict.fold(schemas, schemas, fn(acc, name, s) {
+  dict.fold(schemas, new_pool(schemas), fn(acc, name, s) {
     let #(hoisted, acc) = hoist_schema(name, s, acc, inline_enums)
-    dict.insert(acc, name, hoisted)
-  })
+    pool_insert(acc, name, hoisted)
+  }).schemas
 }
 
 fn hoist_schema(
   owner: String,
   s: Schema,
-  acc: dict.Dict(String, Schema),
+  acc: Pool,
   inline_enums: Bool,
-) -> #(Schema, dict.Dict(String, Schema)) {
+) -> #(Schema, Pool) {
   let #(properties, acc) =
     dict.fold(s.properties, #(dict.new(), acc), fn(state, field, ref) {
       let #(hoisted, acc) =
@@ -491,9 +629,9 @@ fn hoist_schema(
 fn hoist_ref(
   base_name: String,
   ref: reference.Ref(Schema),
-  acc: dict.Dict(String, Schema),
+  acc: Pool,
   inline_enums: Bool,
-) -> #(reference.Ref(Schema), dict.Dict(String, Schema)) {
+) -> #(reference.Ref(Schema), Pool) {
   case ref {
     reference.Reference(_) -> #(ref, acc)
     reference.Inline(sub) ->
@@ -503,8 +641,8 @@ fn hoist_ref(
             True -> {
               let name = unused_name(base_name, acc, 1)
               #(
-                reference.Reference("#/components/schemas/" <> name),
-                dict.insert(acc, name, sub),
+                reference.Reference(schema_ref(name)),
+                pool_insert(acc, name, sub),
               )
             }
             False -> {
@@ -522,10 +660,10 @@ fn hoist_ref(
             )
           // Reserve the name before descending, so a nested object cannot
           // take it.
-          let acc = dict.insert(acc, name, object)
+          let acc = pool_insert(acc, name, object)
           let #(hoisted, acc) = hoist_schema(name, object, acc, inline_enums)
-          let acc = dict.insert(acc, name, hoisted)
-          let named = reference.Reference("#/components/schemas/" <> name)
+          let acc = pool_insert(acc, name, hoisted)
+          let named = reference.Reference(schema_ref(name))
           case inline_object_kind(sub) {
             NullableObject -> #(
               reference.Inline(
@@ -566,7 +704,7 @@ fn hoist_operation_schemas(doc: Document, inline_enums: Bool) -> Document {
       let #(path_items, schemas) =
         dict.fold(
           path_items,
-          #(dict.new(), comps.schemas),
+          #(dict.new(), new_pool(comps.schemas)),
           fn(state, path, ref) {
             case ref {
               reference.Inline(item) -> {
@@ -585,7 +723,7 @@ fn hoist_operation_schemas(doc: Document, inline_enums: Bool) -> Document {
         ..doc,
         paths: option.Some(path_items),
         components: option.Some(
-          components.Components(..comps, schemas: schemas),
+          components.Components(..comps, schemas: schemas.schemas),
         ),
       )
     }
@@ -595,9 +733,9 @@ fn hoist_operation_schemas(doc: Document, inline_enums: Bool) -> Document {
 fn hoist_path_item(
   path: String,
   item: PathItem,
-  schemas: dict.Dict(String, Schema),
+  schemas: Pool,
   inline_enums: Bool,
-) -> #(PathItem, dict.Dict(String, Schema)) {
+) -> #(PathItem, Pool) {
   let hoist = fn(op: Option(Operation), method: String, schemas) {
     case op {
       option.None -> #(option.None, schemas)
@@ -637,9 +775,9 @@ fn hoist_path_item(
 fn hoist_operation(
   owner: String,
   op: Operation,
-  schemas: dict.Dict(String, Schema),
+  schemas: Pool,
   inline_enums: Bool,
-) -> #(Operation, dict.Dict(String, Schema)) {
+) -> #(Operation, Pool) {
   let #(request_body, schemas) = case op.request_body {
     option.Some(reference.Inline(rb)) -> {
       let #(content, schemas) =
@@ -696,9 +834,9 @@ fn hoist_operation(
 fn hoist_content(
   base: String,
   content: dict.Dict(String, parameter.MediaType),
-  schemas: dict.Dict(String, Schema),
+  schemas: Pool,
   inline_enums: Bool,
-) -> #(dict.Dict(String, parameter.MediaType), dict.Dict(String, Schema)) {
+) -> #(dict.Dict(String, parameter.MediaType), Pool) {
   content
   |> dict.to_list
   |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
@@ -777,16 +915,37 @@ fn inline_object_kind(s: Schema) -> InlineObjectKind {
   }
 }
 
-fn unused_name(base: String, taken: dict.Dict(String, Schema), n: Int) -> String {
+/// Component schemas being added to, with the type name each key becomes.
+/// `unused_name` used to work the type names out from every key on every call,
+/// which made naming the inline objects of Stripe's spec take ten minutes.
+type Pool {
+  Pool(schemas: dict.Dict(String, Schema), type_names: set.Set(String))
+}
+
+fn new_pool(schemas: dict.Dict(String, Schema)) -> Pool {
+  Pool(
+    schemas: schemas,
+    type_names: dict.keys(schemas)
+      |> list.map(naming.to_type_name)
+      |> set.from_list,
+  )
+}
+
+fn pool_insert(pool: Pool, name: String, s: Schema) -> Pool {
+  Pool(
+    schemas: dict.insert(pool.schemas, name, s),
+    type_names: set.insert(pool.type_names, naming.to_type_name(name)),
+  )
+}
+
+fn unused_name(base: String, taken: Pool, n: Int) -> String {
   let candidate = case n {
     1 -> base
     _ -> base <> int.to_string(n)
   }
   let clashes =
-    dict.has_key(taken, candidate)
-    || list.any(dict.keys(taken), fn(k) {
-      naming.to_type_name(k) == naming.to_type_name(candidate)
-    })
+    dict.has_key(taken.schemas, candidate)
+    || set.contains(taken.type_names, naming.to_type_name(candidate))
   case clashes {
     True -> unused_name(base, taken, n + 1)
     False -> candidate
@@ -868,10 +1027,7 @@ fn ref_schema_to_typeref(ref_schema: reference.Ref(Schema)) -> ir.TypeRef {
 fn ref_to_typeref(ref_str: String) -> ir.TypeRef {
   // Extract name from "#/components/schemas/Name". The name has to go through
   // the same sanitising as the definition or the reference will not resolve.
-  case string.split(ref_str, "/") {
-    [_, _, _, name] -> ir.Named(naming.to_type_name(name))
-    _ -> ir.Named(naming.to_type_name(ref_str))
-  }
+  ir.Named(naming.to_type_name(ref_component_name(ref_str)))
 }
 
 // ---------------------------------------------------------------------------
@@ -914,7 +1070,35 @@ fn build_endpoints(doc: Document) -> List(ir.Endpoint) {
             build_endpoints_from_path_item(path, path_item, refs)
         }
       })
+      |> unique_operation_ids
     }
+  }
+}
+
+/// operationIds must be unique, but Cloudflare's spec has two `deleteWebhook`.
+/// Each becomes a function and a constructor name, so a repeat (compared as
+/// the snake_case name it generates) gets a number: `deleteWebhook_2`.
+fn unique_operation_ids(endpoints: List(ir.Endpoint)) -> List(ir.Endpoint) {
+  endpoints
+  |> list.fold(#([], set.new()), fn(state, ep) {
+    let #(kept, taken) = state
+    let id = free_operation_id(ep.operation_id, taken, 1)
+    #(
+      [ir.Endpoint(..ep, operation_id: id), ..kept],
+      set.insert(taken, naming.to_snake_case(id)),
+    )
+  })
+  |> fn(state) { list.reverse(state.0) }
+}
+
+fn free_operation_id(id: String, taken: set.Set(String), n: Int) -> String {
+  let candidate = case n {
+    1 -> id
+    _ -> id <> "_" <> int.to_string(n)
+  }
+  case set.contains(taken, naming.to_snake_case(candidate)) {
+    True -> free_operation_id(id, taken, n + 1)
+    False -> candidate
   }
 }
 
@@ -1003,13 +1187,21 @@ fn build_params(
   op_level: List(reference.Ref(Parameter)),
   param_components: dict.Dict(String, reference.Ref(Parameter)),
 ) -> List(ir.EndpointParam) {
-  let all_params = list.append(path_level, op_level)
-  list.filter_map(all_params, fn(ref_param) {
+  let resolve = list.filter_map(_, fn(ref_param) {
     case resolve_component_ref(ref_param, param_components, "parameters") {
       Ok(param) -> Ok(build_param(param))
       Error(_) -> Error(Nil)
     }
   })
+  let op_params = resolve(op_level)
+  // An operation's parameter overrides a path-level one with the same name and
+  // location; listing both gave a route two fields with one label.
+  let overridden =
+    list.map(op_params, fn(p: ir.EndpointParam) { #(p.name, p.location) })
+    |> set.from_list
+  resolve(path_level)
+  |> list.filter(fn(p) { !set.contains(overridden, #(p.name, p.location)) })
+  |> list.append(op_params)
 }
 
 /// Max ref-to-ref hops before giving up, so a cycle cannot hang codegen.

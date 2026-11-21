@@ -255,6 +255,8 @@ Tracked roadmap:
 - `examples/petstore/`: generated output for the Petstore spec
 - `examples/realworld/`: a blog API (users, posts, comments, enums, `allOf`)
 - `examples/wisp_app/`: a working Todo API server on Wisp
+- `examples/public_specs/`: generates and compiles Kubernetes, Stripe, GitHub,
+  Twilio and other public specs (`examples/public_specs/check.sh`)
 
 ## Development
 

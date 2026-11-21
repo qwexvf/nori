@@ -1,0 +1,17 @@
+# name	expect	url
+# expect: "pass" must generate and build with no errors or warnings;
+# anything else is a reason the spec is skipped.
+# Pinned to a commit so a run is reproducible; bump the SHA to retest.
+kubernetes	pass	https://raw.githubusercontent.com/kubernetes/kubernetes/11b26b7d517dcd10176f941301399014ff53416f/api/openapi-spec/v3/api__v1_openapi.json
+petstore3	pass	https://raw.githubusercontent.com/swagger-api/swagger-petstore/5cb909fc7780bc708151bce0014939acba8b212a/src/main/resources/openapi.yaml
+spotify	pass	https://raw.githubusercontent.com/sonallux/spotify-web-api/bd98b4e3ba07c5fcbb7f0ad980aed0e73cfc55ee/fixed-spotify-open-api.yml
+discord	pass	https://raw.githubusercontent.com/discord/discord-api-spec/3a21a01249a763cd47f1dfec3da91c5ba71bb974/specs/openapi.json
+box	pass	https://raw.githubusercontent.com/box/box-openapi/528aaa08fb2350e6af44b0d8a268d0d7053cd652/openapi.json
+twilio	pass	https://raw.githubusercontent.com/twilio/twilio-oai/090e1654f5ca1f6a01b6a117fbec5f75c44f44d7/spec/json/twilio_api_v2010.json
+stripe	pass	https://raw.githubusercontent.com/stripe/openapi/2dcbcfb9baa2535e672cdd2a0b579cbb940ab4b4/openapi/spec3.json
+github	pass	https://raw.githubusercontent.com/github/rest-api-description/c9c95fe34ced05fe076001f5c55704742bc8e7f8/descriptions/api.github.com/api.github.com.json
+cloudflare	pass	https://raw.githubusercontent.com/cloudflare/api-schemas/81d3c790a5b324de180a80426e070755c9af0a3f/openapi.json
+# Not in git, so not pinned.
+jira	pass	https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json
+asana	taffy: folded scalar followed by a sibling key	https://raw.githubusercontent.com/Asana/openapi/b78c58e875915e3aa64234a2b598b95cce32c4a4/defs/asana_oas.yaml
+openai	taffy: YAML parse error	https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml

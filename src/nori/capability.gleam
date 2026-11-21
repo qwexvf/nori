@@ -298,32 +298,40 @@ fn check_request_body(
   case body_ref {
     None -> []
     Some(Reference(_)) -> []
-    Some(Inline(body)) -> {
-      dict.keys(body.content)
-      |> list.flat_map(fn(content_type: String) {
-        case content_type {
-          "multipart/form-data" -> [
-            Issue(
-              name: "requestBody content: multipart/form-data",
-              location: op_loc <> "/requestBody/content/multipart~1form-data",
-              reason: "File uploads / multipart bodies are not generated. nori's TS and Gleam clients hardcode application/json.",
-              severity: Blocking,
-            ),
-          ]
-          "application/x-www-form-urlencoded" -> [
-            Issue(
-              name: "requestBody content: x-www-form-urlencoded",
-              location: op_loc
-                <> "/requestBody/content/application~1x-www-form-urlencoded",
-              reason: "URL-encoded form bodies are not generated.",
-              severity: Blocking,
-            ),
-          ]
-          _ -> []
-        }
-      })
-    }
+    // The generated client sends application/json whenever the body offers
+    // it, so a form or multipart alternative next to it is never used.
+    Some(Inline(body)) ->
+      case dict.has_key(body.content, "application/json") {
+        True -> []
+        False -> check_body_content(body, op_loc)
+      }
   }
+}
+
+fn check_body_content(body: RequestBody, op_loc: String) -> List(Issue) {
+  dict.keys(body.content)
+  |> list.flat_map(fn(content_type: String) {
+    case content_type {
+      "multipart/form-data" -> [
+        Issue(
+          name: "requestBody content: multipart/form-data",
+          location: op_loc <> "/requestBody/content/multipart~1form-data",
+          reason: "File uploads / multipart bodies are not generated. nori's TS and Gleam clients hardcode application/json.",
+          severity: Blocking,
+        ),
+      ]
+      "application/x-www-form-urlencoded" -> [
+        Issue(
+          name: "requestBody content: x-www-form-urlencoded",
+          location: op_loc
+            <> "/requestBody/content/application~1x-www-form-urlencoded",
+          reason: "URL-encoded form bodies are not generated.",
+          severity: Blocking,
+        ),
+      ]
+      _ -> []
+    }
+  })
 }
 
 // ---------------------------------------------------------------------------

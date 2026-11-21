@@ -1489,3 +1489,351 @@ pub fn main() {
   assert_line("phone=Ok(PhoneVariant(Phone(\"123\")))")
   assert_line("neither=Error(UnableToDecode(")
 }
+
+/// #62: scalar unions and scalar aliases, the shapes Kubernetes uses for
+/// Quantity, IntOrString and Time. Two unions with a string member used to
+/// define `StringVariant` twice, and the aliases and scalar unions had no
+/// decoder or encoder although other types called them.
+pub fn scalar_unions_and_aliases_behave_test() {
+  let yaml_str =
+    "openapi: '3.0.4'
+info:
+  title: Scalars
+  version: '1.0.0'
+paths: {}
+components:
+  schemas:
+    Quantity:
+      oneOf:
+        - type: string
+        - type: number
+    IntOrString:
+      oneOf:
+        - type: integer
+        - type: string
+    Time:
+      type: string
+      format: date-time
+    RawExtension:
+      type: object
+    Stamp:
+      allOf:
+        - $ref: '#/components/schemas/Time'
+    Container:
+      type: object
+      required: [cpu]
+      properties:
+        cpu:
+          $ref: '#/components/schemas/Quantity'
+        port:
+          allOf:
+            - $ref: '#/components/schemas/IntOrString'
+        created:
+          $ref: '#/components/schemas/Time'
+        stamp:
+          $ref: '#/components/schemas/Stamp'
+        raw:
+          $ref: '#/components/schemas/RawExtension'
+        _links:
+          type: string
+"
+  let main_source =
+    "import generated/types
+import gleam/io
+import gleam/json
+import gleam/string
+
+fn show(label: String, input: String) -> Nil {
+  let result = json.parse(input, types.container_decoder())
+  io.println(label <> \"=\" <> string.inspect(result))
+  case result {
+    Ok(c) -> io.println(label <> \"_out=\" <> json.to_string(types.encode_container(c)))
+    Error(_) -> Nil
+  }
+}
+
+pub fn main() {
+  show(\"text\", \"{\\\"cpu\\\":\\\"500m\\\",\\\"port\\\":\\\"http\\\",\\\"created\\\":\\\"2024-01-01T00:00:00Z\\\"}\")
+  show(\"number\", \"{\\\"cpu\\\":1,\\\"port\\\":8080}\")
+}
+"
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+  assert_line("QuantityStringVariant(\"500m\")")
+  assert_line("IntOrStringStringVariant(\"http\")")
+  assert_line("Some(\"2024-01-01T00:00:00Z\")")
+  assert_line("\"cpu\":\"500m\"")
+  assert_line("\"port\":\"http\"")
+  // An integer is a valid `number`; decode.float alone rejects it on Erlang.
+  assert_line("FloatVariant(1.0)")
+  assert_line("IntVariant(8080)")
+  assert_line("\"port\":8080")
+}
+
+/// Shapes from real specs that produced code that did not compile: a path and
+/// a query parameter with one name (Kubernetes), names that meet once
+/// punctuation is gone (Twilio's `DateCreated<`), a segment with text around
+/// its parameter (`{Sid}.json`), a `#fragment` in the path key and a literal
+/// segment listed after the parameter it would be shadowed by (Box, Discord),
+/// a hyphenated operationId (Spotify), and a schema name that differs from
+/// another only in case (Jira).
+pub fn real_world_shapes_output_compiles_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Shapes
+  version: '1.0.0'
+paths:
+  /proxy/{path}:
+    get:
+      operationId: proxy-with-path
+      parameters:
+        - {name: path, in: path, required: true, schema: {type: string}}
+        - {name: path, in: query, schema: {type: string}}
+        - {name: DateCreated, in: query, schema: {type: string}}
+        - {name: DateCreated<, in: query, schema: {type: string}}
+        - {name: DateCreated>, in: query, schema: {type: string}}
+      responses:
+        '200': {description: OK}
+  /accounts/{Sid}.json:
+    get:
+      operationId: fetchAccount
+      parameters:
+        - {name: Sid, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/fields'}
+  '/files/{file_id}#add_shared_link':
+    put:
+      operationId: addSharedLink
+      parameters:
+        - {name: file_id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: OK}
+  /files/{file_id}:
+    put:
+      operationId: updateFile
+      parameters:
+        - {name: file_id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: OK}
+  /users/{id}:
+    get:
+      operationId: getUser
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: OK}
+  /users/me:
+    get:
+      operationId: getMe
+      responses:
+        '200':
+          description: OK
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+  /bulk:
+    post:
+      operationId: bulk
+      requestBody:
+        content:
+          application/json:
+            schema: {type: array, items: {}}
+      responses:
+        '200': {description: OK}
+components:
+  schemas:
+    Fields:
+      type: object
+      properties:
+        a: {type: string}
+    fields:
+      type: object
+      properties:
+        b: {type: string}
+    timestamp:
+      type: string
+      format: date-time
+    created_at:
+      allOf:
+        - type: string
+        - $ref: '#/components/schemas/timestamp'
+    content:
+      type: object
+      properties:
+        application/json:
+          type: object
+          properties:
+            ok: {type: boolean}
+    format:
+      discriminator: {propertyName: type}
+      oneOf:
+        - type: object
+          properties:
+            type: {type: string}
+        - type: object
+          properties:
+            type: {type: string}
+            compression: {type: string}
+    sink:
+      type: object
+      properties:
+        format: {$ref: '#/components/schemas/format'}
+"
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let codegen_ir = ir_builder.build(doc)
+  should_compile(codegen_ir)
+  let routes = gleam_routes.generate(codegen_ir, module_prefix)
+  // The literal route is tried first, though the spec lists it second.
+  let assert Ok(#(before_me, _)) = string.split_once(routes, "[\"users\", id]")
+  string.contains(before_me, "[\"users\", \"me\"]") |> should.be_true
+}
+
+/// Segments with text around their parameters are matched in the arm's body,
+/// and a literal route wins over a parameter route listed before it.
+pub fn mixed_segments_route_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Routes
+  version: '1.0.0'
+paths:
+  /accounts/{Sid}.json:
+    get:
+      operationId: fetchAccount
+      parameters:
+        - {name: Sid, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: OK}
+  /files/{id}/thumbnail.{extension}:
+    get:
+      operationId: getThumbnail
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: extension, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: OK}
+  /events/{event_t}.{event_n}:
+    get:
+      operationId: getEvent
+      parameters:
+        - {name: event_t, in: path, required: true, schema: {type: string}}
+        - {name: event_n, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: OK}
+  /users/{id}:
+    get:
+      operationId: getUser
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: OK}
+  /users/me:
+    get:
+      operationId: getMe
+      responses:
+        '200': {description: OK}
+"
+  let main_source =
+    "import generated/routes
+import gleam/http
+import gleam/io
+import gleam/string
+
+fn show(path: List(String)) -> Nil {
+  io.println(string.join(path, \"/\") <> \"=\" <> string.inspect(routes.match_route(http.Get, path)))
+}
+
+pub fn main() {
+  show([\"accounts\", \"AC1.json\"])
+  show([\"accounts\", \"AC1.xml\"])
+  show([\"files\", \"f1\", \"thumbnail.png\"])
+  show([\"files\", \"f1\", \"preview.png\"])
+  show([\"events\", \"start.42\"])
+  show([\"users\", \"me\"])
+  show([\"users\", \"u1\"])
+}
+"
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+  assert_line("accounts/AC1.json=FetchAccount(\"AC1\")")
+  assert_line("accounts/AC1.xml=NotFound")
+  assert_line("files/f1/thumbnail.png=GetThumbnail(\"f1\", \"png\")")
+  assert_line("files/f1/preview.png=NotFound")
+  assert_line("events/start.42=GetEvent(\"start\", \"42\")")
+  assert_line("users/me=GetMe")
+  assert_line("users/u1=GetUser(\"u1\")")
+}
+
+/// The cookie API key and HTTP Basic extractors used to return `Error(Nil)`
+/// whatever the request carried.
+pub fn auth_extractors_behave_test() {
+  let yaml_str =
+    "openapi: '3.1.0'
+info:
+  title: Auth
+  version: '1.0.0'
+paths:
+  /me:
+    get:
+      operationId: getMe
+      responses:
+        '200': {description: OK}
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: session_id
+    basic:
+      type: http
+      scheme: basic
+security:
+  - session: []
+"
+  let main_source =
+    "import generated/middleware
+import gleam/http/request
+import gleam/io
+import gleam/string
+
+pub fn main() {
+  let with = fn(name, value) { request.new() |> request.set_header(name, value) }
+  io.println(\"cookie=\" <> string.inspect(middleware.extract_session(with(\"cookie\", \"theme=dark; session_id=abc123\"))))
+  io.println(\"no_cookie=\" <> string.inspect(middleware.extract_session(with(\"cookie\", \"theme=dark\"))))
+  // \"alice:s3cret\" in base64
+  io.println(\"basic=\" <> string.inspect(middleware.extract_basic(with(\"authorization\", \"Basic YWxpY2U6czNjcmV0\"))))
+  io.println(\"bad_basic=\" <> string.inspect(middleware.extract_basic(with(\"authorization\", \"Basic !!!\"))))
+  io.println(\"bearer=\" <> string.inspect(middleware.extract_basic(with(\"authorization\", \"Bearer x\"))))
+}
+"
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let output = should_run(ir_builder.build(doc), main_source)
+  let assert_line = fn(expected: String) {
+    case string.contains(output, expected) {
+      True -> Nil
+      False -> panic as { "expected " <> expected <> " in:\n" <> output }
+    }
+  }
+  assert_line("cookie=Ok(\"abc123\")")
+  assert_line("no_cookie=Error(Nil)")
+  assert_line("basic=Ok(#(\"alice\", \"s3cret\"))")
+  assert_line("bad_basic=Error(Nil)")
+  assert_line("bearer=Error(Nil)")
+}

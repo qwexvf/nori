@@ -36,17 +36,31 @@ pub fn scalar_checks(
 }
 
 /// Checks on the number of items in a list bound to `var`.
+///
+/// A bound of 0 or 1 is an emptiness test, written as one: the compiler warns
+/// that `list.length(v) >= 1` walks the whole list to answer it.
 pub fn count_checks(c: Constraints, var: String) -> List(Check) {
   let count = "list.length(" <> var <> ")"
-  [
-    bound(c.min_items, fn(n) {
-      Check(count <> " >= " <> int_literal(n), "items >= " <> int_literal(n))
-    }),
-    bound(c.max_items, fn(n) {
-      Check(count <> " <= " <> int_literal(n), "items <= " <> int_literal(n))
-    }),
-  ]
-  |> option.values
+  let min = case c.min_items {
+    Some(0) -> None
+    Some(1) -> Some(Check(var <> " != []", "items >= 1"))
+    Some(n) ->
+      Some(Check(
+        count <> " >= " <> int_literal(n),
+        "items >= " <> int_literal(n),
+      ))
+    None -> None
+  }
+  let max = case c.max_items {
+    Some(0) -> Some(Check(var <> " == []", "items <= 0"))
+    Some(n) ->
+      Some(Check(
+        count <> " <= " <> int_literal(n),
+        "items <= " <> int_literal(n),
+      ))
+    None -> None
+  }
+  option.values([min, max])
 }
 
 /// The type name used in a rejection message: `"integer >= 1 and <= 5"`.
