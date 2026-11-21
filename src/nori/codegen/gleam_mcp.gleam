@@ -181,15 +181,7 @@ fn path_params(ep: Endpoint) -> List(ir.EndpointParam) {
 
 /// The first 2xx response with a body.
 fn success_type(ep: Endpoint) -> Option(TypeRef) {
-  ep.responses
-  |> list.sort(fn(a, b) { string.compare(a.status_code, b.status_code) })
-  |> list.find_map(fn(r) {
-    case string.starts_with(r.status_code, "2"), r.type_ref {
-      True, Some(ref) -> Ok(ref)
-      _, _ -> Error(Nil)
-    }
-  })
-  |> option.from_result
+  option.then(ir.success_response(ep), fn(r) { r.type_ref })
 }
 
 // ---------------------------------------------------------------------------
@@ -229,13 +221,24 @@ fn render_tool(spec: ToolSpec, defs: Dict(String, TypeDef)) -> String {
   <> ",\n    )"
 }
 
+/// The keys of a tool call's arguments object. The request body sits under
+/// `body`, so a parameter cannot have that key either.
+fn argument_keys(ep: Endpoint) -> naming.ParamNames {
+  let reserved = case ep.request_body {
+    Some(_) -> ["body"]
+    None -> []
+  }
+  naming.param_keys(tool_params(ep), reserved)
+}
+
 fn input_schema(spec: ToolSpec, defs: Dict(String, TypeDef)) -> J {
   let ep = spec.endpoint
+  let keys = argument_keys(ep)
   let params =
     tool_params(ep)
     |> list.map(fn(p) {
       #(
-        p.name,
+        naming.param_name(keys, p),
         with_description(ref_schema(p.type_ref, p.constraints), p.description),
         p.required || p.location == ir.PathParam,
       )
@@ -546,20 +549,22 @@ fn render_variant(spec: ToolSpec) -> String {
 
 fn render_arguments_decoder(spec: ToolSpec, enums: List(String)) -> String {
   let ep = spec.endpoint
+  let keys = argument_keys(ep)
   let path_lines =
     path_params(ep)
     |> list.map(fn(p) {
       "  use "
       <> local(p.name)
       <> " <- decode.field("
-      <> naming.string_literal(p.name)
+      <> naming.string_literal(naming.param_name(keys, p))
       <> ", "
       <> gleam_types.value_decoder(p.type_ref, p.constraints, "types.")
       <> ")"
     })
   let query_params = gleam_routes.query_params(ep)
   let names = gleam_routes.query_field_names(ep)
-  let query_lines = list.map(query_params, query_field_line(names, _, enums))
+  let query_lines =
+    list.map(query_params, query_field_line(names, keys, _, enums))
   let body_lines = case ep.request_body {
     Some(rb) -> {
       let dec =
@@ -623,11 +628,12 @@ fn render_arguments_decoder(spec: ToolSpec, enums: List(String)) -> String {
 /// when absent.
 fn query_field_line(
   names: naming.ParamNames,
+  keys: naming.ParamNames,
   p: ir.EndpointParam,
   enums: List(String),
 ) -> String {
   let as_text = ir.param_scalar(_, enums)
-  let key = naming.string_literal(p.name)
+  let key = naming.string_literal(naming.param_name(keys, p))
   let var = query_local(naming.param_name(names, p))
   case ir.strip_optional(p.type_ref) {
     ir.Array(item) -> {

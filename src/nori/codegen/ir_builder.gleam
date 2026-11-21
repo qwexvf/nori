@@ -118,10 +118,15 @@ fn rename_colliding_schemas(doc: Document) -> Document {
             components: option.map(renamed.components, fn(c) {
               components.Components(
                 ..c,
-                schemas: rename_keys(c.schemas, renames),
+                schemas: c.schemas
+                  |> rename_keys(renames)
+                  |> dict.map_values(fn(_, s) { rename_mapping(s, renames) }),
               )
             }),
           )
+        // The encoder and decoder are each other's inverse, so this is not
+        // expected. If it happens, the spec is used as written: the duplicate
+        // type then fails to compile, which names the schemas involved.
         Error(_) -> doc
       }
     }
@@ -156,7 +161,29 @@ fn colliding_renames(
 
 /// The start of a JSON-encoded `$ref` to component schema `name`.
 fn ref_prefix(name: String) -> String {
-  "\"#/components/schemas/" <> name
+  "\"" <> schema_ref(name)
+}
+
+/// A discriminator `mapping` may name its target bare (`x: fields`) instead of
+/// with a `$ref`, which the rewrite of `$ref` strings does not reach.
+fn rename_mapping(s: Schema, renames: dict.Dict(String, String)) -> Schema {
+  case s.discriminator {
+    option.Some(schema.Discriminator(mapping: option.Some(mapping), ..) as d) ->
+      schema.Schema(
+        ..s,
+        discriminator: option.Some(
+          schema.Discriminator(
+            ..d,
+            mapping: option.Some(
+              dict.map_values(mapping, fn(_, target) {
+                result.unwrap(dict.get(renames, target), target)
+              }),
+            ),
+          ),
+        ),
+      )
+    _ -> s
+  }
 }
 
 fn rename_keys(
@@ -1076,8 +1103,9 @@ fn build_endpoints(doc: Document) -> List(ir.Endpoint) {
 }
 
 /// operationIds must be unique, but Cloudflare's spec has two `deleteWebhook`.
-/// Each becomes a function and a constructor name, so a repeat (compared as
-/// the snake_case name it generates) gets a number: `deleteWebhook_2`.
+/// Each becomes a snake_case function name and a PascalCase constructor, so a
+/// repeat gets a number (`deleteWebhook_2`) until both names are free:
+/// `deleteWebhook_2` and an existing `deleteWebhook2` share a constructor.
 fn unique_operation_ids(endpoints: List(ir.Endpoint)) -> List(ir.Endpoint) {
   endpoints
   |> list.fold(#([], set.new()), fn(state, ep) {
@@ -1085,7 +1113,7 @@ fn unique_operation_ids(endpoints: List(ir.Endpoint)) -> List(ir.Endpoint) {
     let id = free_operation_id(ep.operation_id, taken, 1)
     #(
       [ir.Endpoint(..ep, operation_id: id), ..kept],
-      set.insert(taken, naming.to_snake_case(id)),
+      list.fold(generated_names(id), taken, set.insert),
     )
   })
   |> fn(state) { list.reverse(state.0) }
@@ -1096,10 +1124,15 @@ fn free_operation_id(id: String, taken: set.Set(String), n: Int) -> String {
     1 -> id
     _ -> id <> "_" <> int.to_string(n)
   }
-  case set.contains(taken, naming.to_snake_case(candidate)) {
+  case list.any(generated_names(candidate), set.contains(taken, _)) {
     True -> free_operation_id(id, taken, n + 1)
     False -> candidate
   }
+}
+
+/// The identifiers an operationId becomes.
+fn generated_names(id: String) -> List(String) {
+  [naming.to_snake_case(id), naming.to_pascal_case(id)]
 }
 
 fn build_endpoints_from_path_item(

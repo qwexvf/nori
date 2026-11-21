@@ -187,16 +187,11 @@ fn generate_header(
   <> types_import
 }
 
-/// The response type in the endpoint's handler type: its first 2xx
-/// response's. Imports follow this, not every response, or a second success
-/// response or an error body imports a type nothing names.
+/// The response type in the endpoint's handler type: its success response's.
+/// Imports follow this, not every response, or a second success response or
+/// an error body imports a type nothing names.
 fn handler_response_ref(ep: Endpoint) -> option.Option(TypeRef) {
-  case
-    list.find(ep.responses, fn(r) { string.starts_with(r.status_code, "2") })
-  {
-    Ok(r) -> r.type_ref
-    Error(_) -> None
-  }
+  option.then(ir.success_response(ep), fn(r) { r.type_ref })
 }
 
 fn ref_uses_dict(ref: TypeRef) -> Bool {
@@ -289,17 +284,86 @@ fn generate_match_fn(endpoints: List(Endpoint)) -> String {
         method: method_to_pattern(ep.method),
         segments: segments,
         constructor: constructor,
-        variables: list.map(segments, is_variable),
+        rank: list.map(segments, segment_rank),
       )
     })
     // A later arm that an earlier one already covers is an "unreachable
     // pattern" warning; Box multiplexes several operations on one URL.
     |> first_per_shape
-    // `/users/me` has to be tried before `/users/{id}`, whatever order the
-    // spec lists them in. The sort is stable, so arms that cannot shadow each
-    // other keep their order.
-    |> list.sort(fn(a, b) { compare_shapes(a.variables, b.variables) })
+    // `/users/me` has to be tried before `/users/{id}.json`, and that before
+    // `/users/{id}`, whatever order the spec lists them in. The sort is
+    // stable, so arms that cannot shadow each other keep their order.
+    |> list.sort(fn(a, b) { list_compare(a.rank, b.rank) })
 
+  case list.any(arms, has_mixed) {
+    False ->
+      "pub fn match_route(method: Method, segments: List(String)) -> Route {\n"
+      <> match_case(arms, fn(route) { route }, "NotFound")
+      <> "\n}"
+    True -> match_chain(arms)
+  }
+}
+
+/// With a mixed segment, an arm can match the list pattern and still not the
+/// path (`/files/1` against `{id}.json`), and must then let the next arm try,
+/// which a single `case` cannot do. Each mixed arm becomes a function, runs of
+/// plain arms share one, and `match_route` takes the first that matches.
+fn match_chain(arms: List(Arm)) -> String {
+  let links =
+    arms
+    |> list.chunk(has_mixed)
+    |> list.flat_map(fn(run) {
+      case run {
+        [first, ..] ->
+          case has_mixed(first) {
+            True -> list.map(run, fn(arm) { [arm] })
+            False -> [run]
+          }
+        [] -> []
+      }
+    })
+  let name = fn(i) { "match_route_" <> int.to_string(i + 1) }
+  let functions =
+    list.index_map(links, fn(link, i) {
+      "fn "
+      <> name(i)
+      <> "(method: Method, segments: List(String)) -> Result(Route, Nil) {\n"
+      <> match_case(link, fn(route) { "Ok(" <> route <> ")" }, "Error(Nil)")
+      <> "\n}"
+    })
+  let matchers =
+    links |> list.index_map(fn(_, i) { name(i) }) |> string.join(", ")
+  [
+    "pub fn match_route(method: Method, segments: List(String)) -> Route {\n"
+      <> "  first_match(method, segments, ["
+      <> matchers
+      <> "])\n}",
+    "fn first_match(
+  method: Method,
+  segments: List(String),
+  matchers: List(fn(Method, List(String)) -> Result(Route, Nil)),
+) -> Route {
+  case matchers {
+    [] -> NotFound
+    [matcher, ..rest] ->
+      case matcher(method, segments) {
+        Ok(route) -> route
+        Error(_) -> first_match(method, segments, rest)
+      }
+  }
+}",
+    ..functions
+  ]
+  |> string.join("\n\n")
+}
+
+/// `case method, segments` over `arms`. `found` wraps a route, and `miss` is
+/// what a path that matches no arm (or fails a mixed segment) gives.
+fn match_case(
+  arms: List(Arm),
+  found: fn(String) -> String,
+  miss: String,
+) -> String {
   let cases =
     arms
     |> list.map(fn(arm) {
@@ -314,9 +378,9 @@ fn generate_match_fn(endpoints: List(Endpoint)) -> String {
         })
       // Each mixed segment wraps the arm's result in the case that splits it.
       let body =
-        list.index_fold(segments, constructor, fn(inner, segment, i) {
+        list.index_fold(segments, found(constructor), fn(inner, segment, i) {
           case segment {
-            Mixed(parts) -> split_segment(parts, segment_local(i), inner)
+            Mixed(parts) -> split_segment(parts, segment_local(i), inner, miss)
             _ -> inner
           }
         })
@@ -328,12 +392,16 @@ fn generate_match_fn(endpoints: List(Endpoint)) -> String {
       <> body
     })
     |> string.join("\n")
+  "  case method, segments {\n" <> cases <> "\n    _, _ -> " <> miss <> "\n  }"
+}
 
-  "pub fn match_route(method: Method, segments: List(String)) -> Route {\n"
-  <> "  case method, segments {\n"
-  <> cases
-  <> "\n    _, _ -> NotFound\n"
-  <> "  }\n}"
+fn has_mixed(arm: Arm) -> Bool {
+  list.any(arm.segments, fn(segment) {
+    case segment {
+      Mixed(_) -> True
+      _ -> False
+    }
+  })
 }
 
 /// One `case` arm of `match_route`.
@@ -342,8 +410,8 @@ type Arm {
     method: String,
     segments: List(Segment),
     constructor: String,
-    /// Per segment, whether it matches more than one string; the sort key.
-    variables: List(Bool),
+    /// Per segment, how many strings it matches: the sort key.
+    rank: List(Int),
   )
 }
 
@@ -437,9 +505,14 @@ fn push_text(acc: List(Part), text: String) -> List(Part) {
 
 /// Matches `local` against `parts` in the arm's body, since a pattern can only
 /// fix a string's prefix. Each parameter runs up to the next piece of text.
-/// Not matching gives `NotFound`, not the next arm: arms are sorted so that
-/// a fully literal one comes first.
-fn split_segment(parts: List(Part), local: String, inner: String) -> String {
+/// Not matching gives `miss`, which in a chain of matchers lets the next one
+/// try (see `match_chain`).
+fn split_segment(
+  parts: List(Part),
+  local: String,
+  inner: String,
+  miss: String,
+) -> String {
   let or_not_found = fn(pattern, then) {
     "case "
     <> local
@@ -447,7 +520,9 @@ fn split_segment(parts: List(Part), local: String, inner: String) -> String {
     <> pattern
     <> " -> "
     <> then
-    <> "\n_ -> NotFound\n}"
+    <> "\n_ -> "
+    <> miss
+    <> "\n}"
   }
   case parts {
     [] -> or_not_found("\"\"", inner)
@@ -462,7 +537,7 @@ fn split_segment(parts: List(Part), local: String, inner: String) -> String {
     [Text(text), ..rest] ->
       or_not_found(
         naming.string_literal(text) <> " <> " <> local,
-        split_segment(rest, local, inner),
+        split_segment(rest, local, inner, miss),
       )
     [Param(name), Text(text), ..rest] ->
       "case string.split_once("
@@ -474,15 +549,17 @@ fn split_segment(parts: List(Part), local: String, inner: String) -> String {
       <> ", "
       <> local
       <> ")) -> "
-      <> split_segment(rest, local, inner)
-      <> "\n_ -> NotFound\n}"
+      <> split_segment(rest, local, inner, miss)
+      <> "\n_ -> "
+      <> miss
+      <> "\n}"
     // Two parameters with nothing between them cannot be told apart: the first
     // takes the text and the second is empty.
     [Param(first), Param(second), ..rest] ->
       "{\nlet "
       <> naming.to_field_name(second)
       <> " = \"\"\n"
-      <> split_segment([Param(first), ..rest], local, inner)
+      <> split_segment([Param(first), ..rest], local, inner, miss)
       <> "\n}"
   }
 }
@@ -510,24 +587,25 @@ fn segment_shape(segment: Segment) -> String {
   }
 }
 
-fn is_variable(segment: Segment) -> Bool {
+/// A literal matches one string, a mixed segment some, a parameter any.
+fn segment_rank(segment: Segment) -> Int {
   case segment {
-    Literal(_) -> False
-    Variable(_) | Mixed(_) -> True
+    Literal(_) -> 0
+    Mixed(_) -> 1
+    Variable(_) -> 2
   }
 }
 
-/// Orders arms literal-first, position by position.
-fn compare_shapes(a: List(Bool), b: List(Bool)) -> order.Order {
+/// Orders arms most specific first, position by position.
+fn list_compare(a: List(Int), b: List(Int)) -> order.Order {
   case a, b {
     [], [] -> order.Eq
     [], _ -> order.Lt
     _, [] -> order.Gt
     [x, ..xs], [y, ..ys] ->
-      case x, y {
-        False, True -> order.Lt
-        True, False -> order.Gt
-        _, _ -> compare_shapes(xs, ys)
+      case int.compare(x, y) {
+        order.Eq -> list_compare(xs, ys)
+        other -> other
       }
   }
 }
@@ -582,16 +660,9 @@ fn generate_handler_types(endpoints: List(Endpoint)) -> String {
 }
 
 fn get_success_response_type(endpoint: Endpoint) -> String {
-  let success =
-    endpoint.responses
-    |> list.find(fn(r) { string.starts_with(r.status_code, "2") })
-  case success {
-    Ok(resp) ->
-      case resp.type_ref {
-        Some(ref) -> type_ref_to_string(ref)
-        None -> "Nil"
-      }
-    Error(_) -> "Nil"
+  case handler_response_ref(endpoint) {
+    Some(ref) -> type_ref_to_string(ref)
+    None -> "Nil"
   }
 }
 
@@ -882,7 +953,7 @@ fn generate_query_parser(ep: Endpoint, enums: List(String)) -> String {
 }
 
 fn query_read_expr(p: ir.EndpointParam, enums: List(String)) -> String {
-  let name = "\"" <> p.name <> "\""
+  let name = naming.string_literal(p.name)
   let #(value_checks, count_checks) = query_checks(p, enums)
   let parse = case query_enum_of(p, enums) {
     Some(enum_name) -> enum_parser_name(enum_name)

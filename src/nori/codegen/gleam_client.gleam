@@ -126,7 +126,7 @@ fn generate_header(ir: CodegenIR, module_prefix: String) -> String {
   let decodes_number =
     list.any(ir.endpoints, fn(ep) {
       case returned_ref(ep) {
-        Some(ref) -> ir.base_primitive(ref) == Some(ir.PFloat)
+        Some(ref) -> ir.mentions_primitive(ref, ir.PFloat)
         None -> False
       }
     })
@@ -474,23 +474,20 @@ fn generate_request_fn(
 fn generate_response_fn(endpoint: Endpoint, name_prefix: String) -> String {
   let fn_name = "decode_" <> to_snake_case(endpoint.operation_id) <> "_response"
 
-  // Find the success response (2xx)
-  let success_response =
-    endpoint.responses
-    |> list.find(fn(r) { string.starts_with(r.status_code, "2") })
+  let success_response = ir.success_response(endpoint)
 
   let return_type = case success_response {
-    Ok(resp) ->
+    Some(resp) ->
       case resp.type_ref, resp_is_json(resp) {
         Some(_), False -> "String"
         Some(ref), True -> type_ref_to_string(ref, name_prefix)
         None, _ -> "Nil"
       }
-    Error(_) -> "Nil"
+    None -> "Nil"
   }
 
   let decode_body = case success_response {
-    Ok(resp) ->
+    Some(resp) ->
       case resp.type_ref, resp_is_json(resp) {
         Some(_), False -> "      Ok(resp.body)"
         Some(ref), True -> {
@@ -504,7 +501,7 @@ fn generate_response_fn(endpoint: Endpoint, name_prefix: String) -> String {
         }
         None, _ -> "      Ok(Nil)"
       }
-    Error(_) -> "      Ok(Nil)"
+    None -> "      Ok(Nil)"
   }
 
   "pub fn "
@@ -521,17 +518,15 @@ fn generate_response_fn(endpoint: Endpoint, name_prefix: String) -> String {
 }
 
 /// The type the endpoint's decode function returns after parsing JSON: its
-/// first 2xx response's, when that response is JSON.
+/// success response's, when that response is JSON.
 fn returned_ref(ep: Endpoint) -> option.Option(TypeRef) {
-  case
-    list.find(ep.responses, fn(r) { string.starts_with(r.status_code, "2") })
-  {
-    Ok(resp) ->
+  case ir.success_response(ep) {
+    Some(resp) ->
       case resp_is_json(resp) {
         True -> resp.type_ref
         False -> None
       }
-    Error(_) -> None
+    None -> None
   }
 }
 
@@ -647,9 +642,9 @@ fn build_path_expr(
           )
         "string.replace("
         <> expr
-        <> ", \"{"
-        <> p.name
-        <> "}\", "
+        <> ", "
+        <> naming.string_literal("{" <> p.name <> "}")
+        <> ", "
         <> value
         <> ")"
       })
@@ -689,9 +684,9 @@ fn array_query_lines(
     <> source
     <> ", fn("
     <> locals.value
-    <> ") { #(\""
-    <> p.name
-    <> "\", "
+    <> ") { #("
+    <> naming.string_literal(p.name)
+    <> ", "
     <> item_expr
     <> ") }))"
   }
@@ -750,9 +745,9 @@ fn build_query_section(
                   <> locals.query
                   <> " = list.append("
                   <> locals.query
-                  <> ", [#(\""
-                  <> p.name
-                  <> "\", "
+                  <> ", [#("
+                  <> naming.string_literal(p.name)
+                  <> ", "
                   <> value_expr
                   <> ")])\n"
                 }
@@ -773,9 +768,9 @@ fn build_query_section(
                   <> locals.value
                   <> ") -> list.append("
                   <> locals.query
-                  <> ", [#(\""
-                  <> p.name
-                  <> "\", "
+                  <> ", [#("
+                  <> naming.string_literal(p.name)
+                  <> ", "
                   <> value_expr
                   <> ")])\n"
                   <> "    option.None -> "
@@ -842,17 +837,14 @@ fn param_to_string_expr(
   name_prefix: String,
   enum_names: List(String),
 ) -> String {
-  case ref {
-    Primitive(ir.PString) -> var_name
+  // The argument's type comes from the same rule (param_scalar_type), so a
+  // nullable Int is an Int here too.
+  case ir.param_scalar(ref, enum_names) {
     Primitive(ir.PInt) -> "int.to_string(" <> var_name <> ")"
     Primitive(ir.PFloat) -> "float.to_string(" <> var_name <> ")"
     Primitive(ir.PBool) -> "bool.to_string(" <> var_name <> ")"
     Named(name) ->
-      case list.contains(enum_names, name) {
-        True ->
-          name_prefix <> to_snake_case(name) <> "_to_string(" <> var_name <> ")"
-        False -> var_name
-      }
+      name_prefix <> to_snake_case(name) <> "_to_string(" <> var_name <> ")"
     _ -> var_name
   }
 }
@@ -870,7 +862,11 @@ fn build_header_section(
       True -> {
         let value =
           param_to_string_expr(snake, p.type_ref, name_prefix, enum_names)
-        "\n  |> request.set_header(\"" <> p.name <> "\", " <> value <> ")"
+        "\n  |> request.set_header("
+        <> naming.string_literal(p.name)
+        <> ", "
+        <> value
+        <> ")"
       }
       False -> {
         let value =
@@ -879,9 +875,9 @@ fn build_header_section(
         <> "    case "
         <> snake
         <> " {\n"
-        <> "      option.Some(v) -> request.set_header(req, \""
-        <> p.name
-        <> "\", "
+        <> "      option.Some(v) -> request.set_header(req, "
+        <> naming.string_literal(p.name)
+        <> ", "
         <> value
         <> ")\n"
         <> "      option.None -> req\n"
@@ -968,7 +964,7 @@ fn type_ref_encoder_call(
       <> " { option.Some(v) -> "
       <> type_ref_encoder_call("v", inner, name_prefix)
       <> " option.None -> json.null() }"
-    ir.Literal(value) -> "json.string(\"" <> value <> "\")"
+    ir.Literal(value) -> "json.string(" <> naming.string_literal(value) <> ")"
     // freeform object / dictionary bodies have no schema to encode against, so
     // the caller supplies a `Json` value and we pass it through unchanged
     ir.Dict(_, _) | ir.Unknown -> expr

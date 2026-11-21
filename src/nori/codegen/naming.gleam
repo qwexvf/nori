@@ -121,7 +121,7 @@ pub fn param_names(params: List(ir.EndpointParam)) -> ParamNames {
       let base = to_field_name(p.name)
       #(base, base <> "_" <> location_word(p.location))
     })
-    |> unique
+    |> unique(set.new())
   params
   |> list.map(fn(p) { #(p.name, p.location) })
   |> list.zip(names)
@@ -137,14 +137,36 @@ pub fn unique_field_names(names: List(String)) -> List(String) {
     let base = to_field_name(name)
     #(base, base)
   })
-  |> unique
+  |> unique(set.new())
+}
+
+/// JSON keys for parameters that share one object, such as an MCP tool's
+/// arguments: the spec name, unless an earlier parameter or a `reserved` key
+/// (the request `body`) has it; then `path_query` and so on. Kubernetes' proxy
+/// endpoints have a `{path}` segment and a `?path=` query parameter.
+pub fn param_keys(
+  params: List(ir.EndpointParam),
+  reserved: List(String),
+) -> ParamNames {
+  let keys =
+    params
+    |> list.map(fn(p) { #(p.name, p.name <> "_" <> location_word(p.location)) })
+    |> unique(set.from_list(reserved))
+  params
+  |> list.map(fn(p) { #(p.name, p.location) })
+  |> list.zip(keys)
+  |> dict.from_list
+  |> ParamNames
 }
 
 /// One name per `#(preferred, fallback)`, in order: the preferred name if no
 /// earlier entry took it, else the fallback, numbered until it is free.
-fn unique(candidates: List(#(String, String))) -> List(String) {
+fn unique(
+  candidates: List(#(String, String)),
+  taken: Set(String),
+) -> List(String) {
   candidates
-  |> list.fold(#([], set.new()), fn(state, candidate) {
+  |> list.fold(#([], taken), fn(state, candidate) {
     let #(names, taken) = state
     let #(preferred, fallback) = candidate
     let name = case set.contains(taken, preferred) {
