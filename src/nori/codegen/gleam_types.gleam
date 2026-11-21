@@ -9,6 +9,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
 import nori/codegen/gleam_constraints
 import nori/codegen/ir.{
@@ -20,33 +21,417 @@ import nori/codegen/ir.{
 import nori/codegen/naming
 
 /// Generates a complete Gleam module string from the CodegenIR.
+/// The types module: type definitions and the enums' `to_string` and
+/// `from_string`. Decoders and encoders are in the codecs modules
+/// (`generate_codecs`).
 pub fn generate(ir: CodegenIR) -> String {
   let variants = variant_names(ir.types)
   let type_defs =
     ir.types
     |> list.map(generate_type_def(_, variants))
     |> string.join("\n\n")
-  let decoders =
-    ir.types
-    |> list.map(generate_decoder(_, variants))
-    |> list.filter(fn(s) { s != "" })
-    |> string.join("\n\n")
-  let encoders =
-    ir.types
-    |> list.map(generate_encoder(_, variants))
-    |> list.filter(fn(s) { s != "" })
-    |> string.join("\n\n")
-  // Constraint checks call list.length and string.to_utf_codepoints; whether
-  // any were emitted is only known once the decoders exist.
-  let header =
-    generate_header(
-      ir,
-      string.contains(decoders, "list.length("),
-      string.contains(decoders, "string.to_utf_codepoints("),
-      string.contains(decoders, "int.to_float"),
-    )
+  string.join([generate_header(ir), "", type_defs, ""], "\n")
+}
 
-  string.join([header, "", type_defs, "", decoders, "", encoders, ""], "\n")
+/// The codec modules, as paths relative to the types module's directory with
+/// their contents. `module_prefix` is the module path of that directory
+/// (`"generated"`), so that a part can import the types and earlier parts.
+///
+/// Every decoder is a chain of nested funs, and the Erlang compiler's time
+/// grows with the square of the funs in one module (erlang/otp#12258); the
+/// analysis of calls between functions also grows faster than the module.
+/// Cloudflare's codecs in one module took 149s to compile. Up to
+/// `types_per_part` types' codecs go in `codecs.gleam`; above that they are
+/// split into `codecs/part_N.gleam`, which compile in parallel, and
+/// `codecs.gleam` delegates to them so every codec keeps its address.
+///
+/// Gleam modules cannot import each other in a cycle, so types whose codecs
+/// call each other stay in one part, and a part only calls parts before it.
+pub fn generate_codecs(
+  ir: CodegenIR,
+  module_prefix: String,
+) -> List(#(String, String)) {
+  let variants = variant_names(ir.types)
+  let types_module = join_module(module_prefix, "types")
+  let local = fn(name) { to_snake_case(name) <> "_decoder()" }
+  let local_encode = fn(name) { "encode_" <> to_snake_case(name) }
+  case pack_parts(ir.types) {
+    [] -> []
+    [only] -> {
+      let ctx = Ctx(types: "types.", call: local, encode: local_encode)
+      [
+        #(
+          "codecs.gleam",
+          codec_module(ir, only, variants, ctx, types_module, []),
+        ),
+      ]
+    }
+    parts -> {
+      let part_of =
+        parts
+        |> list.index_map(fn(part, i) {
+          list.map(part, fn(td) { #(type_name(td), i + 1) })
+        })
+        |> list.flatten
+        |> dict.from_list
+      let qualify = fn(this, name, local_name) {
+        case dict.get(part_of, name) {
+          Ok(n) if n != this -> "part_" <> int.to_string(n) <> "." <> local_name
+          _ -> local_name
+        }
+      }
+      let part_modules =
+        list.index_map(parts, fn(_, i) {
+          join_module(module_prefix, "codecs/part_" <> int.to_string(i + 1))
+        })
+      let part_files =
+        list.index_map(parts, fn(part, i) {
+          let this = i + 1
+          let ctx =
+            Ctx(
+              types: "types.",
+              call: fn(name) { qualify(this, name, local(name)) },
+              encode: fn(name) { qualify(this, name, local_encode(name)) },
+            )
+          #(
+            "codecs/part_" <> int.to_string(this) <> ".gleam",
+            codec_module(
+              ir,
+              part,
+              variants,
+              ctx,
+              types_module,
+              list.take(part_modules, i),
+            ),
+          )
+        })
+      [#("codecs.gleam", facade(ir, parts, module_prefix)), ..part_files]
+    }
+  }
+}
+
+/// How many types' codecs one module holds: a decoder and an encoder each.
+/// 1,000 decoder-shaped functions compile in under two seconds; 4,000 in ten.
+const types_per_part = 500
+
+fn join_module(prefix: String, name: String) -> String {
+  case prefix {
+    "" -> name
+    _ -> prefix <> "/" <> name
+  }
+}
+
+fn type_name(td: TypeDef) -> String {
+  case td {
+    RecordType(name, ..) | EnumType(name, ..) | UnionType(name, ..) -> name
+    AliasType(name, ..) -> name
+  }
+}
+
+/// A codecs module: the decoders and encoders of `types`, and the imports
+/// they use, worked out from the code.
+fn codec_module(
+  ir: CodegenIR,
+  types: List(TypeDef),
+  variants: Variants,
+  ctx: Ctx,
+  types_module: String,
+  earlier_parts: List(String),
+) -> String {
+  let decoders =
+    types
+    |> list.map(generate_decoder(_, variants, ctx))
+    |> list.filter(fn(s) { s != "" })
+  let encoders =
+    types
+    |> list.map(generate_encoder(_, variants, ctx))
+    |> list.filter(fn(s) { s != "" })
+  let body = string.join(list.append(decoders, encoders), "\n\n")
+  let uses = string.contains(body, _)
+  let parts =
+    list.filter(earlier_parts, fn(module) {
+      uses(module_qualifier(module) <> ".")
+    })
+  let option_names =
+    [#("None", uses("None")), #("Some", uses("Some("))]
+    |> list.filter_map(fn(pair) {
+      case pair.1 {
+        True -> Ok(pair.0)
+        False -> Error(Nil)
+      }
+    })
+  [
+    ["//// Generated from " <> ir.title <> " v" <> ir.version, ""],
+    case uses("gleam.Ok") {
+      True -> ["import gleam"]
+      False -> []
+    },
+    case uses("dict.") {
+      True -> ["import gleam/dict"]
+      False -> []
+    },
+    case uses("Decoder(") {
+      True -> ["import gleam/dynamic/decode.{type Decoder}"]
+      False -> []
+    },
+    case uses("int.to_float") {
+      True -> ["import gleam/int"]
+      False -> []
+    },
+    case uses("Json") {
+      True -> ["import gleam/json.{type Json}"]
+      False -> []
+    },
+    case uses("list.") {
+      True -> ["import gleam/list"]
+      False -> []
+    },
+    case option_names {
+      [] -> []
+      names -> ["import gleam/option.{" <> string.join(names, ", ") <> "}"]
+    },
+    case uses("string.to_utf_codepoints(") {
+      True -> ["import gleam/string"]
+      False -> []
+    },
+    list.map(parts, fn(module) { "import " <> module }),
+    ["import " <> types_module, "", body, ""],
+  ]
+  |> list.flatten
+  |> string.join("\n")
+}
+
+fn module_qualifier(module: String) -> String {
+  case string.split(module, "/") |> list.last {
+    Ok(last) -> last
+    Error(_) -> module
+  }
+}
+
+/// `codecs.gleam` when codecs are split: each decoder and encoder, delegating
+/// to its part.
+fn facade(
+  ir: CodegenIR,
+  parts: List(List(TypeDef)),
+  module_prefix: String,
+) -> String {
+  let imports =
+    list.index_map(parts, fn(_, i) {
+      "import "
+      <> join_module(module_prefix, "codecs/part_" <> int.to_string(i + 1))
+    })
+  let delegates =
+    list.index_map(parts, fn(part, i) {
+      let module = "part_" <> int.to_string(i + 1) <> "."
+      list.flat_map(part, fn(td) {
+        let name = type_name(td)
+        let snake = to_snake_case(name)
+        let decoder = case has_codecs(td) {
+          False -> []
+          True -> [
+            "pub fn "
+            <> snake
+            <> "_decoder() -> Decoder(types."
+            <> name
+            <> ") {\n  "
+            <> module
+            <> snake
+            <> "_decoder()\n}",
+          ]
+        }
+        let encoder = case has_codecs(td) {
+          False -> []
+          True -> [
+            "pub fn encode_"
+            <> snake
+            <> "(value: types."
+            <> name
+            <> ") -> Json {\n  "
+            <> module
+            <> "encode_"
+            <> snake
+            <> "(value)\n}",
+          ]
+        }
+        list.append(decoder, encoder)
+      })
+    })
+    |> list.flatten
+  [
+    ["//// Generated from " <> ir.title <> " v" <> ir.version, ""],
+    [
+      "import gleam/dynamic/decode.{type Decoder}",
+      "import gleam/json.{type Json}",
+    ],
+    imports,
+    ["import " <> join_module(module_prefix, "types"), ""],
+    [string.join(delegates, "\n\n"), ""],
+  ]
+  |> list.flatten
+  |> string.join("\n")
+}
+
+/// False for a type with nothing to decode into: an enum without variants or
+/// a union without members gets neither a decoder nor an encoder.
+fn has_codecs(td: TypeDef) -> Bool {
+  case td {
+    EnumType(_, [], _) | UnionType(_, [], _, _) -> False
+    _ -> True
+  }
+}
+
+/// The types in parts of at most `types_per_part`, in dependency order:
+/// each strongly connected group of types (those whose decoders call each
+/// other) is kept whole, after the groups it calls.
+fn pack_parts(types: List(TypeDef)) -> List(List(TypeDef)) {
+  let by_name =
+    types |> list.map(fn(td) { #(type_name(td), td) }) |> dict.from_list
+  let deps = fn(name) {
+    case dict.get(by_name, name) {
+      Ok(td) -> list.filter(decoder_deps(td), dict.has_key(by_name, _))
+      Error(_) -> []
+    }
+  }
+  let groups = strongly_connected(list.map(types, type_name), deps)
+  let #(parts, current, _) =
+    list.fold(groups, #([], [], 0), fn(state, group) {
+      let #(parts, current, size) = state
+      let n = list.length(group)
+      case size > 0 && size + n > types_per_part {
+        True -> #([list.reverse(current), ..parts], list.reverse(group), n)
+        False -> #(parts, list.append(list.reverse(group), current), size + n)
+      }
+    })
+  let parts = case current {
+    [] -> parts
+    _ -> [list.reverse(current), ..parts]
+  }
+  parts
+  |> list.reverse
+  |> list.map(list.filter_map(_, fn(name) { dict.get(by_name, name) }))
+}
+
+/// The named types a type's decoder calls.
+fn decoder_deps(td: TypeDef) -> List(String) {
+  case td {
+    RecordType(_, fields, _) ->
+      list.flat_map(fields, fn(f) { named_in(f.type_ref) })
+    UnionType(_, members, _, _) -> list.flat_map(members, named_in)
+    AliasType(_, target, _) -> named_in(target)
+    EnumType(..) -> []
+  }
+}
+
+fn named_in(ref: TypeRef) -> List(String) {
+  case ref {
+    Named(name) -> [name]
+    Array(inner) | Nullable(inner) | Optional(inner) | Dict(_, inner) ->
+      named_in(inner)
+    _ -> []
+  }
+}
+
+/// Tarjan's algorithm: the strongly connected components of the graph, each
+/// listed after every component it has an edge to.
+fn strongly_connected(
+  nodes: List(String),
+  edges: fn(String) -> List(String),
+) -> List(List(String)) {
+  let state =
+    list.fold(nodes, new_tarjan(), fn(state, node) {
+      case dict.has_key(state.index, node) {
+        True -> state
+        False -> tarjan_visit(state, node, edges)
+      }
+    })
+  list.reverse(state.components)
+}
+
+type Tarjan {
+  Tarjan(
+    next: Int,
+    index: dict.Dict(String, Int),
+    low: dict.Dict(String, Int),
+    stack: List(String),
+    on_stack: set.Set(String),
+    components: List(List(String)),
+  )
+}
+
+fn new_tarjan() -> Tarjan {
+  Tarjan(
+    next: 0,
+    index: dict.new(),
+    low: dict.new(),
+    stack: [],
+    on_stack: set.new(),
+    components: [],
+  )
+}
+
+fn tarjan_visit(
+  state: Tarjan,
+  node: String,
+  edges: fn(String) -> List(String),
+) -> Tarjan {
+  let state =
+    Tarjan(
+      ..state,
+      next: state.next + 1,
+      index: dict.insert(state.index, node, state.next),
+      low: dict.insert(state.low, node, state.next),
+      stack: [node, ..state.stack],
+      on_stack: set.insert(state.on_stack, node),
+    )
+  let state =
+    list.fold(edges(node), state, fn(state, next) {
+      case dict.get(state.index, next) {
+        Error(_) -> {
+          let state = tarjan_visit(state, next, edges)
+          lower(state, node, get(state.low, next))
+        }
+        Ok(next_index) ->
+          case set.contains(state.on_stack, next) {
+            True -> lower(state, node, next_index)
+            False -> state
+          }
+      }
+    })
+  case get(state.low, node) == get(state.index, node) {
+    False -> state
+    True -> {
+      let #(component, rest) = pop_until(state.stack, node, [])
+      Tarjan(
+        ..state,
+        stack: rest,
+        on_stack: list.fold(component, state.on_stack, set.delete),
+        components: [component, ..state.components],
+      )
+    }
+  }
+}
+
+fn lower(state: Tarjan, node: String, value: Int) -> Tarjan {
+  Tarjan(
+    ..state,
+    low: dict.insert(state.low, node, int.min(get(state.low, node), value)),
+  )
+}
+
+fn get(d: dict.Dict(String, Int), key: String) -> Int {
+  result.unwrap(dict.get(d, key), 0)
+}
+
+fn pop_until(
+  stack: List(String),
+  node: String,
+  acc: List(String),
+) -> #(List(String), List(String)) {
+  case stack {
+    [] -> #(acc, [])
+    [top, ..rest] if top == node -> #([top, ..acc], rest)
+    [top, ..rest] -> pop_until(rest, node, [top, ..acc])
+  }
 }
 
 /// Convert a name to snake_case. See `naming.to_snake_case`.
@@ -58,12 +443,7 @@ pub fn to_snake_case(name: String) -> String {
 // Header generation
 // ---------------------------------------------------------------------------
 
-fn generate_header(
-  ir: CodegenIR,
-  checks_use_list: Bool,
-  checks_use_string: Bool,
-  decodes_number: Bool,
-) -> String {
+fn generate_header(ir: CodegenIR) -> String {
   let title_comment = "//// Generated from " <> ir.title <> " v" <> ir.version
 
   // For specs with no named schemas, skip the codec imports entirely so the
@@ -85,26 +465,14 @@ fn generate_header(
       // Only when a field is actually optional. A spec of enums and required
       // fields never mentions Option, and an unused import is a warning in a
       // file the consumer is told not to edit.
+      // The module holds types and enum helpers only; the codecs modules
+      // import what decoding and encoding use.
       let option_import = case uses_option(ir) {
-        True -> ["import gleam/option.{type Option, None, Some}"]
+        True -> ["import gleam/option.{type Option}"]
         False -> []
       }
-      // A map field is typed Dict, and its encoder walks the entries with
-      // dict.to_list and list.map.
       let dict_imports = case uses_dict(ir) {
         True -> ["import gleam/dict.{type Dict}"]
-        False -> []
-      }
-      let list_import = case uses_dict(ir) || checks_use_list {
-        True -> ["import gleam/list"]
-        False -> []
-      }
-      let string_import = case checks_use_string {
-        True -> ["import gleam/string"]
-        False -> []
-      }
-      let int_import = case decodes_number {
-        True -> ["import gleam/int"]
         False -> []
       }
       let lines =
@@ -113,14 +481,7 @@ fn generate_header(
           prelude_import,
           dict_imports,
           dynamic_import,
-          [
-            "import gleam/dynamic/decode.{type Decoder}",
-          ],
-          int_import,
-          ["import gleam/json.{type Json}"],
           option_import,
-          list_import,
-          string_import,
         ])
       string.join(lines, "\n")
     }
@@ -501,31 +862,40 @@ fn generate_alias_type(
 // Decoder generation
 // ---------------------------------------------------------------------------
 
-fn generate_decoder(typedef: TypeDef, variants: Variants) -> String {
+/// Where a decoder module finds what it names: types and constructors under
+/// `types` (`"types."`), and the decoder of a named type through `call`, which
+/// is local for one in the same module and qualified for one in another part.
+type Ctx {
+  Ctx(types: String, call: fn(String) -> String, encode: fn(String) -> String)
+}
+
+fn generate_decoder(typedef: TypeDef, variants: Variants, ctx: Ctx) -> String {
   case typedef {
     RecordType(name, fields, _) ->
-      generate_record_decoder(name, labelled(fields))
+      generate_record_decoder(name, labelled(fields), ctx)
     EnumType(name, enum_variants, _) ->
-      generate_enum_decoder(name, enum_variants)
+      generate_enum_decoder(name, enum_variants, ctx)
     UnionType(name, _, discriminator, _) ->
       generate_union_decoder(
         name,
         union_variants(variants, name),
         discriminator,
+        ctx,
       )
-    AliasType(name, target, _) -> generate_alias_decoder(name, target)
+    AliasType(name, target, _) -> generate_alias_decoder(name, target, ctx)
   }
 }
 
 /// Other types call `<alias>_decoder()` like any named type's, so an alias
 /// needs one even though its type is just the target's.
-fn generate_alias_decoder(name: String, target: TypeRef) -> String {
+fn generate_alias_decoder(name: String, target: TypeRef, ctx: Ctx) -> String {
   "pub fn "
   <> to_snake_case(name)
   <> "_decoder() -> Decoder("
+  <> ctx.types
   <> name
   <> ") {\n  "
-  <> type_ref_decoder(target, "")
+  <> type_ref_decoder(target, ctx.call)
   <> "\n}"
 }
 
@@ -533,23 +903,30 @@ fn generate_union_decoder(
   name: String,
   members: List(#(TypeRef, String)),
   discriminator: Option(ir.Discriminator),
+  ctx: Ctx,
 ) -> String {
   case members, discriminator {
-    [first, ..rest], None -> untagged_union_decoder(name, first, rest)
+    [first, ..rest], None -> untagged_union_decoder(name, first, rest, ctx)
     // A discriminator whose members are all inline schemas maps no tag to any
     // member (the capability check reports it). Trying each member still
     // decodes, and the union's type needs a decoder either way: other types
     // call it.
     [first, ..rest], Some(d) ->
-      tagged_union_decoder(name, members, d)
-      |> result.lazy_unwrap(fn() { untagged_union_decoder(name, first, rest) })
+      tagged_union_decoder(name, members, d, ctx)
+      |> result.lazy_unwrap(fn() {
+        untagged_union_decoder(name, first, rest, ctx)
+      })
     [], _ -> ""
   }
 }
 
 /// Decodes one member and wraps it in its constructor.
-fn member_decoder(member: #(TypeRef, String)) -> String {
-  type_ref_decoder(member.0, "") <> " |> decode.map(" <> member.1 <> ")"
+fn member_decoder(member: #(TypeRef, String), ctx: Ctx) -> String {
+  type_ref_decoder(member.0, ctx.call)
+  <> " |> decode.map("
+  <> ctx.types
+  <> member.1
+  <> ")"
 }
 
 /// Tries each member in order and keeps the first that decodes, which is what
@@ -559,18 +936,20 @@ fn untagged_union_decoder(
   name: String,
   first: #(TypeRef, String),
   rest: List(#(TypeRef, String)),
+  ctx: Ctx,
 ) -> String {
   let others =
     rest
-    |> list.map(fn(m) { "    " <> member_decoder(m) <> ",\n" })
+    |> list.map(fn(m) { "    " <> member_decoder(m, ctx) <> ",\n" })
     |> string.concat
 
   "pub fn "
   <> to_snake_case(name)
   <> "_decoder() -> Decoder("
+  <> ctx.types
   <> name
   <> ") {\n  decode.one_of(\n    "
-  <> member_decoder(first)
+  <> member_decoder(first, ctx)
   <> ",\n    [\n"
   <> string.replace(others, "    ", "      ")
   <> "    ],\n  )\n}"
@@ -587,6 +966,7 @@ fn tagged_union_decoder(
   name: String,
   members: List(#(TypeRef, String)),
   d: ir.Discriminator,
+  ctx: Ctx,
 ) -> Result(String, Nil) {
   let arms =
     list.filter_map(members, fn(member) {
@@ -612,7 +992,7 @@ fn tagged_union_decoder(
           "    "
           <> string.join(arm.0, " | ")
           <> " ->\n      "
-          <> member_decoder(arm.1)
+          <> member_decoder(arm.1, ctx)
           <> "\n"
         })
         |> string.concat
@@ -620,6 +1000,7 @@ fn tagged_union_decoder(
         "pub fn "
         <> to_snake_case(name)
         <> "_decoder() -> Decoder("
+        <> ctx.types
         <> name
         <> ") {\n  use tag <- decode.field(\n    "
         <> naming.string_literal(d.property)
@@ -630,14 +1011,14 @@ fn tagged_union_decoder(
         <> ")\n        }\n      }),\n  )\n  case tag {\n"
         <> dispatch
         <> "    _ -> "
-        <> member_decoder(last)
+        <> member_decoder(last, ctx)
         <> "\n  }\n}",
       )
     }
   }
 }
 
-fn generate_record_decoder(name: String, fields: Labelled) -> String {
+fn generate_record_decoder(name: String, fields: Labelled, ctx: Ctx) -> String {
   let fn_name = to_snake_case(name) <> "_decoder"
   // Label shorthand: each field was bound under its own label.
   let constructor_args =
@@ -646,16 +1027,22 @@ fn generate_record_decoder(name: String, fields: Labelled) -> String {
     |> list.map(fn(label) { label <> ":" })
     |> string.join(", ")
   let success =
-    "  decode.success(" <> name <> "(" <> constructor_args <> "))\n}"
+    "  decode.success("
+    <> ctx.types
+    <> name
+    <> "("
+    <> constructor_args
+    <> "))\n}"
 
   case list.length(fields) > max_use_chain {
     False ->
       "pub fn "
       <> fn_name
       <> "() -> Decoder("
+      <> ctx.types
       <> name
       <> ") {\n"
-      <> field_use_lines(fields)
+      <> field_use_lines(fields, ctx)
       <> "\n"
       <> success
     // Each `use` nests a closure, and the Gleam compiler (1.18) overflows its
@@ -672,6 +1059,7 @@ fn generate_record_decoder(name: String, fields: Labelled) -> String {
         "pub fn "
         <> fn_name
         <> "() -> Decoder("
+        <> ctx.types
         <> name
         <> ") {\n"
         <> parts
@@ -686,7 +1074,7 @@ fn generate_record_decoder(name: String, fields: Labelled) -> String {
           "fn "
           <> part_name(i)
           <> "() {\n"
-          <> field_use_lines(part)
+          <> field_use_lines(part, ctx)
           <> "\n  decode.success("
           <> tuple(part)
           <> ")\n}"
@@ -698,11 +1086,11 @@ fn generate_record_decoder(name: String, fields: Labelled) -> String {
 
 const max_use_chain = 64
 
-fn field_use_lines(fields: Labelled) -> String {
+fn field_use_lines(fields: Labelled, ctx: Ctx) -> String {
   fields
   |> list.map(fn(pair) {
     let #(f, snake) = pair
-    let decoder_expr = constrained_decoder(f.type_ref, f.constraints, "")
+    let decoder_expr = constrained_decoder(f.type_ref, f.constraints, ctx.call)
     case f.required {
       True ->
         "  use "
@@ -735,10 +1123,16 @@ pub fn value_decoder(
   c: ir.Constraints,
   qualifier: String,
 ) -> String {
-  constrained_decoder(ref, c, qualifier)
+  constrained_decoder(ref, c, fn(name) {
+    qualifier <> to_snake_case(name) <> "_decoder()"
+  })
 }
 
-fn constrained_decoder(ref: TypeRef, c: ir.Constraints, q: String) -> String {
+fn constrained_decoder(
+  ref: TypeRef,
+  c: ir.Constraints,
+  q: fn(String) -> String,
+) -> String {
   case ref {
     Nullable(inner) | Optional(inner) ->
       "decode.optional(" <> constrained_decoder(inner, c, q) <> ")"
@@ -777,9 +1171,9 @@ fn checked_decoder(
   }
 }
 
-fn type_ref_decoder(ref: TypeRef, q: String) -> String {
+fn type_ref_decoder(ref: TypeRef, q: fn(String) -> String) -> String {
   case ref {
-    Named(name) -> q <> to_snake_case(name) <> "_decoder()"
+    Named(name) -> q(name)
     Primitive(p) -> primitive_decoder(p)
     Array(item) -> "decode.list(" <> type_ref_decoder(item, q) <> ")"
     Dict(_, value) ->
@@ -809,7 +1203,11 @@ fn primitive_decoder(p: PrimitiveType) -> String {
   }
 }
 
-fn generate_enum_decoder(name: String, variants: List(EnumVariant)) -> String {
+fn generate_enum_decoder(
+  name: String,
+  variants: List(EnumVariant),
+  ctx: Ctx,
+) -> String {
   case variants {
     [] -> ""
     [first, ..] -> {
@@ -819,15 +1217,18 @@ fn generate_enum_decoder(name: String, variants: List(EnumVariant)) -> String {
       "pub fn "
       <> fn_name
       <> "() -> Decoder("
+      <> ctx.types
       <> name
       <> ") {\n"
       <> "  use value <- decode.then(decode.string)\n"
       <> "  case "
+      <> ctx.types
       <> from_fn
       <> "(value) {\n"
       <> "    gleam.Ok(variant) -> decode.success(variant)\n"
       // decode.failure needs a zero value of the type, not the type itself
       <> "    gleam.Error(_) -> decode.failure("
+      <> ctx.types
       <> first.name
       <> ", \""
       <> name
@@ -841,26 +1242,27 @@ fn generate_enum_decoder(name: String, variants: List(EnumVariant)) -> String {
 // Encoder generation
 // ---------------------------------------------------------------------------
 
-fn generate_encoder(typedef: TypeDef, variants: Variants) -> String {
+fn generate_encoder(typedef: TypeDef, variants: Variants, ctx: Ctx) -> String {
   case typedef {
     RecordType(name, fields, _) ->
-      generate_record_encoder(name, labelled(fields))
-    EnumType(name, _variants, _) -> generate_enum_encoder(name)
+      generate_record_encoder(name, labelled(fields), ctx)
+    EnumType(name, _, _) -> generate_enum_encoder(name, ctx)
     UnionType(name, _, _, _) ->
-      generate_union_encoder(name, union_variants(variants, name))
-    AliasType(name, target, _) -> generate_alias_encoder(name, target)
+      generate_union_encoder(name, union_variants(variants, name), ctx)
+    AliasType(name, target, _) -> generate_alias_encoder(name, target, ctx)
   }
 }
 
-fn generate_alias_encoder(name: String, target: TypeRef) -> String {
+fn generate_alias_encoder(name: String, target: TypeRef, ctx: Ctx) -> String {
   "pub fn encode_"
   <> to_snake_case(name)
   <> "("
   <> binding("value", target)
   <> ": "
+  <> ctx.types
   <> name
   <> ") -> Json {\n  "
-  <> type_ref_encoder("value", target)
+  <> type_ref_encoder("value", target, ctx)
   <> "\n}"
 }
 
@@ -881,13 +1283,13 @@ fn binding(name: String, ref: TypeRef) -> String {
   }
 }
 
-fn generate_record_encoder(name: String, fields: Labelled) -> String {
+fn generate_record_encoder(name: String, fields: Labelled, ctx: Ctx) -> String {
   let fn_name = "encode_" <> to_snake_case(name)
   let field_encoders =
     fields
     |> list.map(fn(pair) {
       let #(f, snake) = pair
-      let encoder_expr = type_ref_encoder("value." <> snake, f.type_ref)
+      let encoder_expr = type_ref_encoder("value." <> snake, f.type_ref, ctx)
       case f.required {
         True ->
           "    #("
@@ -904,7 +1306,7 @@ fn generate_record_encoder(name: String, fields: Labelled) -> String {
           <> "      Some("
           <> binding("v", f.type_ref)
           <> ") -> "
-          <> type_ref_encoder("v", f.type_ref)
+          <> type_ref_encoder("v", f.type_ref, ctx)
           <> "\n"
           <> "      None -> json.null()\n"
           <> "    })"
@@ -926,6 +1328,7 @@ fn generate_record_encoder(name: String, fields: Labelled) -> String {
   <> "("
   <> param
   <> ": "
+  <> ctx.types
   <> name
   <> ") -> Json {\n"
   <> "  json.object([\n"
@@ -933,23 +1336,29 @@ fn generate_record_encoder(name: String, fields: Labelled) -> String {
   <> ",\n  ])\n}"
 }
 
-fn type_ref_encoder(expr: String, ref: TypeRef) -> String {
+fn type_ref_encoder(expr: String, ref: TypeRef, ctx: Ctx) -> String {
   case ref {
-    Named(name) -> "encode_" <> to_snake_case(name) <> "(" <> expr <> ")"
+    Named(name) -> ctx.encode(name) <> "(" <> expr <> ")"
     Primitive(p) -> primitive_encoder(expr, p)
+    // A function passed as itself, not wrapped in `fn(item) { .. }`: each
+    // wrapper is one more fun for the Erlang compiler (erlang/otp#12258).
     Array(item) ->
-      "json.array("
-      <> expr
-      <> ", fn("
-      <> binding("item", item)
-      <> ") { "
-      <> type_ref_encoder("item", item)
-      <> " })"
+      case item_encoder_fn(item, ctx) {
+        Ok(f) -> "json.array(" <> expr <> ", " <> f <> ")"
+        Error(_) ->
+          "json.array("
+          <> expr
+          <> ", fn("
+          <> binding("item", item)
+          <> ") { "
+          <> type_ref_encoder("item", item, ctx)
+          <> " })"
+      }
     Dict(_, value) ->
       "json.object("
       <> expr
       <> " |> dict.to_list |> list.map(fn(pair) { #(pair.0, "
-      <> type_ref_encoder("pair.1", value)
+      <> type_ref_encoder("pair.1", value, ctx)
       <> ") }))"
     Nullable(inner) | Optional(inner) ->
       "case "
@@ -957,10 +1366,23 @@ fn type_ref_encoder(expr: String, ref: TypeRef) -> String {
       <> " { Some("
       <> binding("v", inner)
       <> ") -> "
-      <> type_ref_encoder("v", inner)
+      <> type_ref_encoder("v", inner, ctx)
       <> " None -> json.null() }"
     Literal(value) -> "json.string(" <> naming.string_literal(value) <> ")"
     Unknown -> "json.null()"
+  }
+}
+
+/// The encoder of `item` as a function value, when there is one to name.
+fn item_encoder_fn(item: TypeRef, ctx: Ctx) -> Result(String, Nil) {
+  case item {
+    Named(name) -> Ok(ctx.encode(name))
+    Primitive(PString) | Primitive(PDateTime) | Primitive(PDate) ->
+      Ok("json.string")
+    Primitive(PInt) -> Ok("json.int")
+    Primitive(PFloat) -> Ok("json.float")
+    Primitive(PBool) -> Ok("json.bool")
+    _ -> Error(Nil)
   }
 }
 
@@ -969,6 +1391,7 @@ fn type_ref_encoder(expr: String, ref: TypeRef) -> String {
 fn generate_union_encoder(
   name: String,
   members: List(#(TypeRef, String)),
+  ctx: Ctx,
 ) -> String {
   case members {
     [_, ..] -> {
@@ -976,17 +1399,19 @@ fn generate_union_encoder(
         members
         |> list.map(fn(member) {
           "    "
+          <> ctx.types
           <> member.1
           <> "("
           <> binding("v", member.0)
           <> ") -> "
-          <> type_ref_encoder("v", member.0)
+          <> type_ref_encoder("v", member.0, ctx)
           <> "\n"
         })
         |> string.concat
       "pub fn encode_"
       <> to_snake_case(name)
       <> "(value: "
+      <> ctx.types
       <> name
       <> ") -> Json {\n  case value {\n"
       <> arms
@@ -996,16 +1421,18 @@ fn generate_union_encoder(
   }
 }
 
-fn generate_enum_encoder(name: String) -> String {
+fn generate_enum_encoder(name: String, ctx: Ctx) -> String {
   let fn_name = "encode_" <> to_snake_case(name)
   let to_string_fn = to_snake_case(name) <> "_to_string"
 
   "pub fn "
   <> fn_name
   <> "(value: "
+  <> ctx.types
   <> name
   <> ") -> Json {\n"
   <> "  json.string("
+  <> ctx.types
   <> to_string_fn
   <> "(value))\n}"
 }

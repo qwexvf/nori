@@ -2,6 +2,7 @@
 ////
 //// This is the glue between the generated code and your business logic.
 
+import generated/codecs
 import generated/routes
 import generated/types
 import gleam/json
@@ -29,20 +30,20 @@ pub fn handle_request(req: Request) -> Response {
 
 fn list_todos(_req: Request) -> Response {
   let items = store.list_todos()
-  let body = json.array(items, types.encode_todo)
+  let body = json.array(items, codecs.encode_todo)
   json_response(body, 200)
 }
 
 fn create_todo(req: Request) -> Response {
   use body <- wisp.require_string_body(req)
-  case json.parse(body, types.create_todo_request_decoder()) {
+  case json.parse(body, codecs.create_todo_request_decoder()) {
     Ok(input) -> {
       let item = store.create_todo(input.title, input.description)
-      json_response(types.encode_todo(item), 201)
+      json_response(codecs.encode_todo(item), 201)
     }
     Error(_) -> {
       json_response(
-        types.encode_error(types.Error(message: "Invalid request body")),
+        codecs.encode_error(types.Error(message: "Invalid request body")),
         400,
       )
     }
@@ -51,10 +52,10 @@ fn create_todo(req: Request) -> Response {
 
 fn get_todo(_req: Request, id: String) -> Response {
   case store.get_todo(id) {
-    Some(item) -> json_response(types.encode_todo(item), 200)
+    Some(item) -> json_response(codecs.encode_todo(item), 200)
     None ->
       json_response(
-        types.encode_error(types.Error(message: "Todo not found")),
+        codecs.encode_error(types.Error(message: "Todo not found")),
         404,
       )
   }
@@ -62,20 +63,20 @@ fn get_todo(_req: Request, id: String) -> Response {
 
 fn update_todo(req: Request, id: String) -> Response {
   use body <- wisp.require_string_body(req)
-  case json.parse(body, types.update_todo_request_decoder()) {
+  case json.parse(body, codecs.update_todo_request_decoder()) {
     Ok(input) -> {
       case store.update_todo(id, input) {
-        Some(item) -> json_response(types.encode_todo(item), 200)
+        Some(item) -> json_response(codecs.encode_todo(item), 200)
         None ->
           json_response(
-            types.encode_error(types.Error(message: "Todo not found")),
+            codecs.encode_error(types.Error(message: "Todo not found")),
             404,
           )
       }
     }
     Error(_) -> {
       json_response(
-        types.encode_error(types.Error(message: "Invalid request body")),
+        codecs.encode_error(types.Error(message: "Invalid request body")),
         400,
       )
     }
@@ -87,7 +88,7 @@ fn delete_todo(_req: Request, id: String) -> Response {
     True -> wisp.response(204)
     False ->
       json_response(
-        types.encode_error(types.Error(message: "Todo not found")),
+        codecs.encode_error(types.Error(message: "Todo not found")),
         404,
       )
   }

@@ -263,8 +263,21 @@ fn input_schema(spec: ToolSpec, defs: Dict(String, TypeDef)) -> J {
 
 /// MCP wants `outputSchema` to describe an object (`structuredContent` is
 /// one), so only a response that is a record gets one.
+/// The type an alias stands for. A response that is an alias of a record (a
+/// hoisted record merged into an identical one) still gets an output schema.
+fn unalias(ref: TypeRef, defs: Dict(String, TypeDef)) -> TypeRef {
+  case ref {
+    ir.Named(name) ->
+      case dict.get(defs, name) {
+        Ok(ir.AliasType(target: target, ..)) -> unalias(target, defs)
+        _ -> ref
+      }
+    _ -> ref
+  }
+}
+
 fn output_schema(spec: ToolSpec, defs: Dict(String, TypeDef)) -> Option(J) {
-  case success_type(spec.endpoint) {
+  case option.map(success_type(spec.endpoint), unalias(_, defs)) {
     Some(ir.Named(name)) ->
       case dict.get(defs, name) {
         Ok(ir.RecordType(..)) ->
@@ -558,7 +571,7 @@ fn render_arguments_decoder(spec: ToolSpec, enums: List(String)) -> String {
       <> " <- decode.field("
       <> naming.string_literal(naming.param_name(keys, p))
       <> ", "
-      <> gleam_types.value_decoder(p.type_ref, p.constraints, "types.")
+      <> gleam_types.value_decoder(p.type_ref, p.constraints, "codecs.")
       <> ")"
     })
   let query_params = gleam_routes.query_params(ep)
@@ -568,7 +581,7 @@ fn render_arguments_decoder(spec: ToolSpec, enums: List(String)) -> String {
   let body_lines = case ep.request_body {
     Some(rb) -> {
       let dec =
-        gleam_types.value_decoder(rb.type_ref, ir.no_constraints(), "types.")
+        gleam_types.value_decoder(rb.type_ref, ir.no_constraints(), "codecs.")
       case rb.required {
         True -> ["  use body <- decode.field(\"body\", " <> dec <> ")"]
         False -> [
@@ -641,7 +654,7 @@ fn query_field_line(
         gleam_types.value_decoder(
           ir.Array(as_text(ir.strip_optional(item))),
           p.constraints,
-          "types.",
+          "codecs.",
         )
       case p.required {
         True ->
@@ -657,7 +670,8 @@ fn query_field_line(
       }
     }
     ref -> {
-      let dec = gleam_types.value_decoder(as_text(ref), p.constraints, "types.")
+      let dec =
+        gleam_types.value_decoder(as_text(ref), p.constraints, "codecs.")
       case p.required {
         True ->
           "  use " <> var <> " <- decode.field(" <> key <> ", " <> dec <> ")"
@@ -750,6 +764,10 @@ fn header(
     },
     case uses("routes.") {
       True -> ["import " <> module(routes_module, "routes")]
+      False -> []
+    },
+    case uses("codecs.") {
+      True -> ["import " <> module(types_module, "codecs")]
       False -> []
     },
     case uses("types.") {

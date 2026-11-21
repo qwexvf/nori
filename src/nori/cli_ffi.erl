@@ -1,5 +1,5 @@
 -module(cli_ffi).
--export([read_stdin/0, run_executable/2]).
+-export([read_stdin/0, run_executable/2, content_hash/1]).
 
 %% Read the whole of standard input as a UTF-8 binary (a Gleam String).
 read_stdin() ->
@@ -35,3 +35,7 @@ collect(Port, Acc) ->
         {Port, {exit_status, Status}} ->
             {ok, {Status, iolist_to_binary(lists:reverse(Acc))}}
     end.
+
+%% SHA-256 of a string, as lowercase hex.
+content_hash(Content) ->
+    binary:encode_hex(crypto:hash(sha256, Content), lowercase).

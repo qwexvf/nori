@@ -1,6 +1,7 @@
 //// Exercises the API through the router, the way a client would: the
 //// generated route matcher, decoders and encoders all sit on this path.
 
+import generated/codecs
 import generated/types
 import gleam/http
 import gleam/json
@@ -23,7 +24,7 @@ fn create(title: String) -> types.Todo {
     |> router.handle_request
   assert response.status == 201
   let assert Ok(item) =
-    json.parse(simulate.read_body(response), types.todo_decoder())
+    json.parse(simulate.read_body(response), codecs.todo_decoder())
   item
 }
 
@@ -36,7 +37,7 @@ pub fn create_then_get_test() {
     simulate.request(http.Get, "/todos/" <> item.id)
     |> router.handle_request
   assert response.status == 200
-  assert json.parse(simulate.read_body(response), types.todo_decoder())
+  assert json.parse(simulate.read_body(response), codecs.todo_decoder())
     == Ok(item)
 }
 
@@ -48,7 +49,7 @@ pub fn update_test() {
     |> router.handle_request
   assert response.status == 200
   let assert Ok(updated) =
-    json.parse(simulate.read_body(response), types.todo_decoder())
+    json.parse(simulate.read_body(response), codecs.todo_decoder())
   assert updated.completed == True
   assert updated.title == "Write tests"
 }

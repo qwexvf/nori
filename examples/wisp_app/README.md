@@ -9,8 +9,8 @@ the generator in this repository.
 `gleam run -m nori/cli -- generate` reads `nori.config.yaml` and writes to
 `src/generated/`:
 
-- `types.gleam`: `Todo`, `CreateTodoRequest`, `UpdateTodoRequest`, `Error`,
-  with decoders and encoders
+- `types.gleam`: `Todo`, `CreateTodoRequest`, `UpdateTodoRequest`, `Error`
+- `codecs.gleam`: their decoders and encoders
 - `routes.gleam`: the `Route` type and `match_route(method, segments)`
 - `client.gleam` and `middleware.gleam`, which this app does not use
 

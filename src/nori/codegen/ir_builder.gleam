@@ -50,10 +50,14 @@ pub fn build(doc: Document) -> ir.CodegenIR {
 
 /// Builds a CodegenIR with the given options.
 pub fn build_with(doc: Document, options: BuildOptions) -> ir.CodegenIR {
-  let doc =
-    doc
-    |> rename_colliding_schemas
-    |> hoist_operation_schemas(options.inline_enums)
+  let doc = rename_colliding_schemas(doc)
+  // Types the spec names itself; every other record was named by hoisting.
+  let spec_types = case doc.components {
+    option.Some(c) ->
+      dict.keys(c.schemas) |> list.map(naming.to_type_name) |> set.from_list
+    option.None -> set.new()
+  }
+  let doc = hoist_operation_schemas(doc, options.inline_enums)
   let types =
     build_types(doc, options.inline_enums)
     |> fn(types) {
@@ -62,6 +66,7 @@ pub fn build_with(doc: Document, options: BuildOptions) -> ir.CodegenIR {
         False -> types
       }
     }
+    |> merge_hoisted_duplicates(fn(name) { !set.contains(spec_types, name) })
   let endpoints = build_endpoints(doc)
   let base_url = extract_base_url(doc)
 
@@ -857,6 +862,113 @@ fn is_string_enum(s: Schema) -> Bool {
     option.Some([_, ..]), option.Some(schema.SingleType(schema.TypeString)) ->
       True
     _, _ -> False
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate hoisted records
+// ---------------------------------------------------------------------------
+
+/// Makes each record that hoisting named, and that has the same fields as
+/// another such record, an alias of it. Cloudflare's spec repeats the same
+/// inline response wrappers so often that 8,524 of its 14,655 types were
+/// copies, each with its own decoder and encoder; the copies were most of the
+/// generated code and of the time to compile it.
+///
+/// Fields are compared by label, type, whether required, and constraints;
+/// descriptions are ignored. A record whose field types merged can then match
+/// another, so it repeats until nothing merges. Of each group the
+/// alphabetically first name keeps the record, so the result is the same on
+/// every run. Records the spec names itself (`hoisted` is False) are kept.
+fn merge_hoisted_duplicates(
+  types: List(ir.TypeDef),
+  hoisted: fn(String) -> Bool,
+) -> List(ir.TypeDef) {
+  let aliases = find_duplicates(types, hoisted, dict.new())
+  list.map(types, fn(td) {
+    case td {
+      ir.RecordType(name, _, description) ->
+        case dict.get(aliases, name) {
+          Ok(canonical) ->
+            ir.AliasType(
+              name: name,
+              target: ir.Named(resolve_alias(canonical, aliases)),
+              description: description,
+            )
+          Error(_) -> td
+        }
+      _ -> td
+    }
+  })
+}
+
+fn find_duplicates(
+  types: List(ir.TypeDef),
+  hoisted: fn(String) -> Bool,
+  aliases: dict.Dict(String, String),
+) -> dict.Dict(String, String) {
+  let groups =
+    list.fold(types, dict.new(), fn(groups, td) {
+      case td {
+        ir.RecordType(name, fields, _) ->
+          case hoisted(name) && !dict.has_key(aliases, name) {
+            True ->
+              dict.upsert(groups, record_shape(fields, aliases), fn(names) {
+                [name, ..option.unwrap(names, [])]
+              })
+            False -> groups
+          }
+        _ -> groups
+      }
+    })
+  let found =
+    dict.fold(groups, aliases, fn(aliases, _, names) {
+      case list.sort(names, string.compare) {
+        [canonical, _, ..] as sorted ->
+          list.fold(list.drop(sorted, 1), aliases, fn(aliases, name) {
+            dict.insert(aliases, name, canonical)
+          })
+        _ -> aliases
+      }
+    })
+  case dict.size(found) == dict.size(aliases) {
+    True -> found
+    False -> find_duplicates(types, hoisted, found)
+  }
+}
+
+/// What a record's fields decode, with merged names followed to the record
+/// that stays.
+fn record_shape(
+  fields: List(ir.Field),
+  aliases: dict.Dict(String, String),
+) -> List(#(String, ir.TypeRef, Bool, ir.Constraints)) {
+  fields
+  |> list.map(fn(f) {
+    #(f.name, canonical_ref(f.type_ref, aliases), f.required, f.constraints)
+  })
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+}
+
+fn canonical_ref(
+  ref: ir.TypeRef,
+  aliases: dict.Dict(String, String),
+) -> ir.TypeRef {
+  case ref {
+    ir.Named(name) -> ir.Named(resolve_alias(name, aliases))
+    ir.Array(inner) -> ir.Array(canonical_ref(inner, aliases))
+    ir.Nullable(inner) -> ir.Nullable(canonical_ref(inner, aliases))
+    ir.Optional(inner) -> ir.Optional(canonical_ref(inner, aliases))
+    ir.Dict(key, value) ->
+      ir.Dict(canonical_ref(key, aliases), canonical_ref(value, aliases))
+    other -> other
+  }
+}
+
+fn resolve_alias(name: String, aliases: dict.Dict(String, String)) -> String {
+  case dict.get(aliases, name) {
+    Ok(target) -> resolve_alias(target, aliases)
+    Error(_) -> name
   }
 }
 

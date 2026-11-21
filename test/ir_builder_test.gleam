@@ -768,9 +768,23 @@ paths:
     |> list.sort(string.compare)
   names
   |> should.equal([
-    "ListMessagesResponseItem", "SendMessageRequest", "SendMessageResponse",
-    "SendMessageResponse422",
+    "ListMessagesResponseItem", "SendMessageResponse", "SendMessageResponse422",
   ])
+  // The request body `{text}` has the same fields as a listed message, so its
+  // name is an alias of the record that stays (the alphabetically first).
+  list.find(result.types, fn(t) {
+    case t {
+      ir.AliasType(name: "SendMessageRequest", ..) -> True
+      _ -> False
+    }
+  })
+  |> should.equal(
+    Ok(ir.AliasType(
+      name: "SendMessageRequest",
+      target: ir.Named("ListMessagesResponseItem"),
+      description: option.None,
+    )),
+  )
 
   let assert Ok(send) =
     list.find(result.endpoints, fn(e) { e.operation_id == "sendMessage" })

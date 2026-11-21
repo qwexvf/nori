@@ -1,8 +1,7 @@
+//// nori-hash: 27a09fcd9f08eb0a65ce4582049090087effb7a4b6afbab9cb548e1c12056e3e 74219e48ffc642e710c267e99229aa44507df0b539232581aad91c68d903c47f
 //// Generated from Petstore API v1.0.0
 
-import gleam/dynamic/decode.{type Decoder}
-import gleam/json.{type Json}
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option}
 
 pub type CreatePetRequest {
   CreatePetRequest(name: String, tag: Option(String))
@@ -14,51 +13,4 @@ pub type Error {
 
 pub type Pet {
   Pet(id: Int, name: String, tag: Option(String))
-}
-
-pub fn create_pet_request_decoder() -> Decoder(CreatePetRequest) {
-  use name <- decode.field("name", decode.string)
-  use tag <- decode.optional_field("tag", None, decode.optional(decode.string))
-  decode.success(CreatePetRequest(name:, tag:))
-}
-
-pub fn error_decoder() -> Decoder(Error) {
-  use code <- decode.field("code", decode.int)
-  use message <- decode.field("message", decode.string)
-  decode.success(Error(code:, message:))
-}
-
-pub fn pet_decoder() -> Decoder(Pet) {
-  use id <- decode.field("id", decode.int)
-  use name <- decode.field("name", decode.string)
-  use tag <- decode.optional_field("tag", None, decode.optional(decode.string))
-  decode.success(Pet(id:, name:, tag:))
-}
-
-pub fn encode_create_pet_request(value: CreatePetRequest) -> Json {
-  json.object([
-    #("name", json.string(value.name)),
-    #("tag", case value.tag {
-      Some(v) -> json.string(v)
-      None -> json.null()
-    }),
-  ])
-}
-
-pub fn encode_error(value: Error) -> Json {
-  json.object([
-    #("code", json.int(value.code)),
-    #("message", json.string(value.message)),
-  ])
-}
-
-pub fn encode_pet(value: Pet) -> Json {
-  json.object([
-    #("id", json.int(value.id)),
-    #("name", json.string(value.name)),
-    #("tag", case value.tag {
-      Some(v) -> json.string(v)
-      None -> json.null()
-    }),
-  ])
 }

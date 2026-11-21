@@ -14,6 +14,7 @@
 //// Needs the `gleam` binary on PATH, and network on the first run to fetch the
 //// scratch project's dependencies.
 
+import gleam/int
 import gleam/list
 import gleam/option.{Some}
 import gleam/string
@@ -319,12 +320,25 @@ fn should_compile(codegen_ir: CodegenIR) -> Nil {
     shell("cd " <> project_dir <> " && gleam build 2>&1; echo __NORI_EXIT:$?")
 
   case string.contains(output, "__NORI_EXIT:0") {
-    True -> Nil
+    True -> no_generated_warnings(output)
     False -> {
       // Surface the compiler's own message; a bare should.fail() here would
       // tell you only that something in the generated code is broken.
       panic as { "generated code failed to compile:\n" <> output }
     }
+  }
+}
+
+/// Generated files are not the consumer's to edit, so a warning in one is a
+/// bug: an unused import there fails their `gleam build --warnings-as-errors`.
+fn no_generated_warnings(output: String) -> Nil {
+  let warned =
+    string.split(output, "\nwarning: ")
+    |> list.drop(1)
+    |> list.filter(fn(w) { string.contains(w, "/src/generated/") })
+  case warned {
+    [] -> Nil
+    _ -> panic as { "generated code has warnings:\n" <> output }
   }
 }
 
@@ -339,7 +353,10 @@ fn write_generated(codegen_ir: CodegenIR) -> Nil {
   // Matches the CLI, which skips a types module it would leave empty.
   let types_file = case codegen_ir.types {
     [] -> []
-    _ -> [#("types.gleam", gleam_types.generate(codegen_ir))]
+    _ -> [
+      #("types.gleam", gleam_types.generate(codegen_ir)),
+      ..gleam_types.generate_codecs(codegen_ir, module_prefix)
+    ]
   }
 
   list.flatten([
@@ -364,7 +381,9 @@ fn write_generated(codegen_ir: CodegenIR) -> Nil {
   ])
   |> list.each(fn(pair) {
     let #(name, contents) = pair
-    let assert Ok(_) = simplifile.write(gen_dir <> "/" <> name, contents)
+    let path = gen_dir <> "/" <> name
+    let assert Ok(_) = simplifile.create_directory_all(filepath_directory(path))
+    let assert Ok(_) = simplifile.write(path, contents)
   })
 }
 
@@ -388,7 +407,10 @@ fn should_run(codegen_ir: CodegenIR, main_source: String) -> String {
   let _ = simplifile.delete(project_dir <> "/src/main.gleam")
 
   case string.contains(output, "__NORI_EXIT:0") {
-    True -> output
+    True -> {
+      no_generated_warnings(output)
+      output
+    }
     False -> panic as { "generated code failed to run:\n" <> output }
   }
 }
@@ -781,8 +803,10 @@ components:
   let types = gleam_types.generate(ir)
   // The label changes, the JSON key does not.
   types |> string.contains("type_: Option(String)") |> should.be_true
-  types |> string.contains("decode.optional_field(\"type\"") |> should.be_true
-  types |> string.contains("#(\"let\", ") |> should.be_true
+  codecs_source(ir)
+  |> string.contains("decode.optional_field(\"type\"")
+  |> should.be_true
+  codecs_source(ir) |> string.contains("#(\"let\", ") |> should.be_true
   ir |> should_compile
 }
 
@@ -1120,14 +1144,14 @@ components:
         slots: { type: array, minItems: 1, items: { type: integer, minimum: 1 } }"
 
   let main_source =
-    "import generated/routes
-import generated/types
+    "import generated/codecs
+import generated/routes
 import gleam/io
 import gleam/json
 import gleam/string
 
 fn body(label: String, input: String) -> Nil {
-  io.println(label <> \"=\" <> string.inspect(json.parse(input, types.message_decoder())))
+  io.println(label <> \"=\" <> string.inspect(json.parse(input, codecs.message_decoder())))
 }
 
 fn query(label: String, params: List(#(String, String))) -> Nil {
@@ -1313,6 +1337,7 @@ components:
 import gleam/dynamic/decode
 import gleam/io
 import gleam/json
+import gleam/int
 import gleam/list
 import gleam/option.{Some}
 import gleam/string
@@ -1437,16 +1462,17 @@ components:
         phone: { type: string }"
 
   let main_source =
-    "import generated/types
+    "import generated/codecs
+import generated/types
 import gleam/io
 import gleam/json
 import gleam/string
 
 fn show(label: String, input: String) -> Nil {
-  let result = json.parse(input, types.message_decoder())
+  let result = json.parse(input, codecs.message_decoder())
   io.println(label <> \"=\" <> string.inspect(result))
   case result {
-    Ok(m) -> io.println(label <> \"_out=\" <> json.to_string(types.encode_message(m)))
+    Ok(m) -> io.println(label <> \"_out=\" <> json.to_string(codecs.encode_message(m)))
     Error(_) -> Nil
   }
 }
@@ -1457,8 +1483,8 @@ pub fn main() {
   show(\"meeting\", \"{\\\"kind\\\":\\\"meeting\\\",\\\"at\\\":\\\"11:00\\\"}\")
   show(\"unknown\", \"{\\\"kind\\\":\\\"poll\\\",\\\"body\\\":\\\"hi\\\"}\")
   show(\"wrong_shape\", \"{\\\"kind\\\":\\\"event\\\",\\\"body\\\":\\\"hi\\\"}\")
-  io.println(\"phone=\" <> string.inspect(json.parse(\"{\\\"phone\\\":\\\"123\\\"}\", types.contact_decoder())))
-  io.println(\"neither=\" <> string.inspect(json.parse(\"{}\", types.contact_decoder())))
+  io.println(\"phone=\" <> string.inspect(json.parse(\"{\\\"phone\\\":\\\"123\\\"}\", codecs.contact_decoder())))
+  io.println(\"neither=\" <> string.inspect(json.parse(\"{}\", codecs.contact_decoder())))
 }
 "
 
@@ -1540,16 +1566,17 @@ components:
           type: string
 "
   let main_source =
-    "import generated/types
+    "import generated/codecs
+import generated/types
 import gleam/io
 import gleam/json
 import gleam/string
 
 fn show(label: String, input: String) -> Nil {
-  let result = json.parse(input, types.container_decoder())
+  let result = json.parse(input, codecs.container_decoder())
   io.println(label <> \"=\" <> string.inspect(result))
   case result {
-    Ok(c) -> io.println(label <> \"_out=\" <> json.to_string(types.encode_container(c)))
+    Ok(c) -> io.println(label <> \"_out=\" <> json.to_string(codecs.encode_container(c)))
     Error(_) -> Nil
   }
 }
@@ -2053,4 +2080,166 @@ pub fn main() {
   assert_line("Some(\"q\")")
   assert_line("Some(\"x\")")
   assert_line("\"payload\"")
+}
+
+/// Hoisted records with the same fields become aliases of one record, nested
+/// ones too once their fields have merged; records the spec names stay apart.
+/// An alias decodes and encodes like the record it stands for.
+pub fn duplicate_hoisted_records_merge_test() {
+  let response = fn(status: String) { "        '" <> status <> "':
+          description: E
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [errors]
+                properties:
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      required: [message]
+                      properties:
+                        message: {type: string, description: 'differs " <> status <> "'}
+" }
+  let yaml_str = "openapi: '3.1.0'
+info:
+  title: Merge
+  version: '1.0.0'
+paths:
+  /a:
+    get:
+      operationId: getA
+      responses:
+" <> response("400") <> response("404") <> "  /b:
+    get:
+      operationId: getB
+      responses:
+" <> response("400") <> "components:
+  schemas:
+    First:
+      type: object
+      properties:
+        message: {type: string}
+    Second:
+      type: object
+      properties:
+        message: {type: string}
+"
+  let main_source =
+    "import generated/codecs
+import generated/types
+import gleam/io
+import gleam/json
+import gleam/string
+
+pub fn main() {
+  let assert Ok(v) =
+    json.parse(\"{\\\"errors\\\":[{\\\"message\\\":\\\"no\\\"}]}\", codecs.get_b_response400_decoder())
+  io.println(\"decoded=\" <> string.inspect(v))
+  io.println(\"encoded=\" <> json.to_string(codecs.encode_get_b_response400(v)))
+}
+"
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let codegen_ir = ir_builder.build(doc)
+  let records =
+    list.filter_map(codegen_ir.types, fn(t) {
+      case t {
+        ir.RecordType(name: name, ..) -> Ok(name)
+        _ -> Error(Nil)
+      }
+    })
+    |> list.sort(string.compare)
+  // One wrapper and one item record are left of three of each; First and
+  // Second have the same fields but are the spec's own names.
+  records
+  |> should.equal([
+    "First", "GetAResponse400", "GetAResponse400ErrorsItem", "Second",
+  ])
+  let output = should_run(codegen_ir, main_source)
+  string.contains(
+    output,
+    "decoded=GetAResponse400([GetAResponse400ErrorsItem(\"no\")])",
+  )
+  |> should.be_true
+  string.contains(output, "encoded={\"errors\":[{\"message\":\"no\"}]}")
+  |> should.be_true
+}
+
+fn filepath_directory(path: String) -> String {
+  case string.split(path, "/") |> list.reverse {
+    [_, ..dirs] -> dirs |> list.reverse |> string.join("/")
+    [] -> path
+  }
+}
+
+/// All generated decoder modules, joined.
+fn codecs_source(ir: CodegenIR) -> String {
+  gleam_types.generate_codecs(ir, module_prefix)
+  |> list.map(fn(file) { file.1 })
+  |> string.join("\n")
+}
+
+/// A spec with more decoders than fit in one module is split into parts that
+/// compile (no import cycle between parts), and `decoders.gleam` still offers
+/// every decoder. 1,700 types each refer to the one before; `Ping` and `Pong`
+/// refer to each other and so share a part.
+pub fn codecs_split_into_parts_test() {
+  let chain =
+    int.range(from: 1699, to: -1, with: [], run: fn(acc, i) { [i, ..acc] })
+    |> list.map(fn(i) {
+      let n = int.to_string(i)
+      case i {
+        0 ->
+          "    T0:\n      type: object\n      properties:\n        v: {type: string}\n"
+        _ ->
+          "    T"
+          <> n
+          <> ":\n      type: object\n      properties:\n        prev: {$ref: '#/components/schemas/T"
+          <> int.to_string(i - 1)
+          <> "'}\n"
+      }
+    })
+    |> string.concat
+  let yaml_str = "openapi: '3.1.0'
+info:
+  title: Split
+  version: '1.0.0'
+paths: {}
+components:
+  schemas:
+    Ping:
+      type: object
+      properties:
+        last: {$ref: '#/components/schemas/T1699'}
+        pong: {$ref: '#/components/schemas/Pong'}
+    Pong:
+      type: object
+      properties:
+        ping: {$ref: '#/components/schemas/Ping'}
+" <> chain
+  let main_source =
+    "import generated/codecs
+import gleam/io
+import gleam/json
+import gleam/string
+
+pub fn main() {
+  let input = \"{\\\"pong\\\":{\\\"ping\\\":{}},\\\"last\\\":{\\\"prev\\\":{}}}\"
+  io.println(\"ping=\" <> string.inspect(json.parse(input, codecs.ping_decoder())))
+}
+"
+  let assert Ok(doc) = yaml.parse_yaml(yaml_str)
+  let codegen_ir = ir_builder.build(doc)
+  let files =
+    gleam_types.generate_codecs(codegen_ir, module_prefix)
+    |> list.map(fn(file) { file.0 })
+  // 1,702 types at 500 a part: the facade and four parts.
+  files
+  |> should.equal([
+    "codecs.gleam", "codecs/part_1.gleam", "codecs/part_2.gleam",
+    "codecs/part_3.gleam", "codecs/part_4.gleam",
+  ])
+  let output = should_run(codegen_ir, main_source)
+  string.contains(output, "ping=Ok(Ping(") |> should.be_true
 }

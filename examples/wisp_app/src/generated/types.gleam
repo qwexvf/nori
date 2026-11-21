@@ -1,8 +1,7 @@
+//// nori-hash: b8a54d8ac74885299c176a91f94b885bdf58f1827a9e0596c8ef91e01b8d043d c15dd84dbda67b8379e68eb0cd1333a236fdf59b5fbe18540959a3f6cfc12826
 //// Generated from Todo API v1.0.0
 
-import gleam/dynamic/decode.{type Decoder}
-import gleam/json.{type Json}
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option}
 
 pub type CreateTodoRequest {
   CreateTodoRequest(description: Option(String), title: String)
@@ -22,95 +21,4 @@ pub type UpdateTodoRequest {
     description: Option(String),
     title: Option(String),
   )
-}
-
-pub fn create_todo_request_decoder() -> Decoder(CreateTodoRequest) {
-  use description <- decode.optional_field(
-    "description",
-    None,
-    decode.optional(decode.string),
-  )
-  use title <- decode.field("title", decode.string)
-  decode.success(CreateTodoRequest(description:, title:))
-}
-
-pub fn error_decoder() -> Decoder(Error) {
-  use message <- decode.field("message", decode.string)
-  decode.success(Error(message:))
-}
-
-pub fn todo_decoder() -> Decoder(Todo) {
-  use completed <- decode.field("completed", decode.bool)
-  use description <- decode.optional_field(
-    "description",
-    None,
-    decode.optional(decode.string),
-  )
-  use id <- decode.field("id", decode.string)
-  use title <- decode.field("title", decode.string)
-  decode.success(Todo(completed:, description:, id:, title:))
-}
-
-pub fn update_todo_request_decoder() -> Decoder(UpdateTodoRequest) {
-  use completed <- decode.optional_field(
-    "completed",
-    None,
-    decode.optional(decode.bool),
-  )
-  use description <- decode.optional_field(
-    "description",
-    None,
-    decode.optional(decode.string),
-  )
-  use title <- decode.optional_field(
-    "title",
-    None,
-    decode.optional(decode.string),
-  )
-  decode.success(UpdateTodoRequest(completed:, description:, title:))
-}
-
-pub fn encode_create_todo_request(value: CreateTodoRequest) -> Json {
-  json.object([
-    #("description", case value.description {
-      Some(v) -> json.string(v)
-      None -> json.null()
-    }),
-    #("title", json.string(value.title)),
-  ])
-}
-
-pub fn encode_error(value: Error) -> Json {
-  json.object([
-    #("message", json.string(value.message)),
-  ])
-}
-
-pub fn encode_todo(value: Todo) -> Json {
-  json.object([
-    #("completed", json.bool(value.completed)),
-    #("description", case value.description {
-      Some(v) -> json.string(v)
-      None -> json.null()
-    }),
-    #("id", json.string(value.id)),
-    #("title", json.string(value.title)),
-  ])
-}
-
-pub fn encode_update_todo_request(value: UpdateTodoRequest) -> Json {
-  json.object([
-    #("completed", case value.completed {
-      Some(v) -> json.bool(v)
-      None -> json.null()
-    }),
-    #("description", case value.description {
-      Some(v) -> json.string(v)
-      None -> json.null()
-    }),
-    #("title", case value.title {
-      Some(v) -> json.string(v)
-      None -> json.null()
-    }),
-  ])
 }

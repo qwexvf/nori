@@ -19,7 +19,8 @@ output:
 
   # Gleam server-side code generation
   # Generates:
-  #   - types.gleam      — Record types, custom types, decoders (gleam/dynamic/decode), JSON encoders
+  #   - types.gleam      — Record types, custom types, enum to_string/from_string
+  #   - codecs.gleam     : a gleam/dynamic/decode decoder and a JSON encoder per type (split into codecs/part_N.gleam above 500 types)
   #   - client.gleam     — Framework-agnostic HTTP request builders + response decoders
   #   - routes.gleam     — Route union type + match_route(method, segments) pattern matcher
   #   - middleware.gleam  — Auth extractors, CORS, content-type validation (from securitySchemes)

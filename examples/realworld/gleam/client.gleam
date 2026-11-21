@@ -1,5 +1,7 @@
+//// nori-hash: f78250ac0d26e80842039bf429aa77441e87f2e627dd7170a9e76d7857c1c001 7e080d498c7a7427e48bf1f024830ff61e288db4cc19fe57b585cd87405c5c23
 //// Generated HTTP client from RealWorld Blog API v1.0.0
 
+import gleam/codecs
 import gleam/dynamic/decode
 import gleam/http.{Delete, Get, Post, Put}
 import gleam/http/request.{type Request}
@@ -39,7 +41,7 @@ pub fn create_post_request(
     list.fold(config.headers, req, fn(r, h) { request.set_header(r, h.0, h.1) })
   }
   |> request.set_header("content-type", "application/json")
-  |> request.set_body(json.to_string(types.encode_create_post_request(body)))
+  |> request.set_body(json.to_string(codecs.encode_create_post_request(body)))
 }
 
 pub fn decode_create_post_response(
@@ -47,7 +49,7 @@ pub fn decode_create_post_response(
 ) -> Result(types.Post, ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, types.post_decoder()) {
+      case json.parse(resp.body, codecs.post_decoder()) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -100,7 +102,7 @@ pub fn decode_list_posts_response(
 ) -> Result(List(types.Post), ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, decode.list(types.post_decoder())) {
+      case json.parse(resp.body, decode.list(codecs.post_decoder())) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -151,7 +153,7 @@ pub fn update_post_request(
     list.fold(config.headers, req, fn(r, h) { request.set_header(r, h.0, h.1) })
   }
   |> request.set_header("content-type", "application/json")
-  |> request.set_body(json.to_string(types.encode_create_post_request(body)))
+  |> request.set_body(json.to_string(codecs.encode_create_post_request(body)))
 }
 
 pub fn decode_update_post_response(
@@ -159,7 +161,7 @@ pub fn decode_update_post_response(
 ) -> Result(types.Post, ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, types.post_decoder()) {
+      case json.parse(resp.body, codecs.post_decoder()) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -189,7 +191,7 @@ pub fn decode_get_post_response(
 ) -> Result(types.Post, ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, types.post_decoder()) {
+      case json.parse(resp.body, codecs.post_decoder()) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -213,7 +215,9 @@ pub fn create_comment_request(
     list.fold(config.headers, req, fn(r, h) { request.set_header(r, h.0, h.1) })
   }
   |> request.set_header("content-type", "application/json")
-  |> request.set_body(json.to_string(types.encode_create_comment_request(body)))
+  |> request.set_body(
+    json.to_string(codecs.encode_create_comment_request(body)),
+  )
 }
 
 pub fn decode_create_comment_response(
@@ -221,7 +225,7 @@ pub fn decode_create_comment_response(
 ) -> Result(types.Comment, ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, types.comment_decoder()) {
+      case json.parse(resp.body, codecs.comment_decoder()) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -264,7 +268,7 @@ pub fn decode_list_comments_response(
 ) -> Result(List(types.Comment), ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, decode.list(types.comment_decoder())) {
+      case json.parse(resp.body, decode.list(codecs.comment_decoder())) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -287,7 +291,7 @@ pub fn create_user_request(
     list.fold(config.headers, req, fn(r, h) { request.set_header(r, h.0, h.1) })
   }
   |> request.set_header("content-type", "application/json")
-  |> request.set_body(json.to_string(types.encode_create_user_request(body)))
+  |> request.set_body(json.to_string(codecs.encode_create_user_request(body)))
 }
 
 pub fn decode_create_user_response(
@@ -295,7 +299,7 @@ pub fn decode_create_user_response(
 ) -> Result(types.User, ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, types.user_decoder()) {
+      case json.parse(resp.body, codecs.user_decoder()) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -342,7 +346,7 @@ pub fn decode_list_users_response(
 ) -> Result(List(types.User), ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, decode.list(types.user_decoder())) {
+      case json.parse(resp.body, decode.list(codecs.user_decoder())) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -393,7 +397,7 @@ pub fn update_user_request(
     list.fold(config.headers, req, fn(r, h) { request.set_header(r, h.0, h.1) })
   }
   |> request.set_header("content-type", "application/json")
-  |> request.set_body(json.to_string(types.encode_update_user_request(body)))
+  |> request.set_body(json.to_string(codecs.encode_update_user_request(body)))
 }
 
 pub fn decode_update_user_response(
@@ -401,7 +405,7 @@ pub fn decode_update_user_response(
 ) -> Result(types.User, ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, types.user_decoder()) {
+      case json.parse(resp.body, codecs.user_decoder()) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
@@ -431,7 +435,7 @@ pub fn decode_get_user_response(
 ) -> Result(types.User, ClientError) {
   case resp.status {
     status if status >= 200 && status < 300 -> {
-      case json.parse(resp.body, types.user_decoder()) {
+      case json.parse(resp.body, codecs.user_decoder()) {
         Ok(value) -> Ok(value)
         Error(_) -> Error(DecodeError("Failed to decode response"))
       }
