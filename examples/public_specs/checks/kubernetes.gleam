@@ -4,7 +4,7 @@
 //// string]`) and Time (a `string` alias) are the shapes from nori#62: they had
 //// no decoder or encoder although the Pod's decoder called them.
 
-import generated/types
+import generated/codecs
 import gleam/io
 import gleam/json
 import gleam/string
@@ -29,9 +29,9 @@ const pod = "{
 
 pub fn main() {
   let assert Ok(decoded) =
-    json.parse(pod, types.io_k8s_api_core_v1_pod_decoder())
+    json.parse(pod, codecs.io_k8s_api_core_v1_pod_decoder())
   let inspected = string.inspect(decoded)
-  let encoded = json.to_string(types.encode_io_k8s_api_core_v1_pod(decoded))
+  let encoded = json.to_string(codecs.encode_io_k8s_api_core_v1_pod(decoded))
 
   // Each union decodes to the member the JSON holds, a whole number included.
   expect(inspected, "StringVariant(\"500m\")")
